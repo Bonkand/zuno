@@ -288,6 +288,10 @@ export class AudioEngine {
   private onEnded: (() => void) | null = null;
   private endedAt: { positionSec: number; durationSec: number } | null = null;
   private loadRequestId = 0;
+  /** Last "raw" value read from rust/audio/player, to detect when the engine actually updates it. */
+  private lastRawTime = 0;
+  /** performance.now() at the instant lastRawTime was last observed to change. */
+  private lastRawTimeAt = 0;
   private stateWaiters = new Set<{
     states: Set<number>;
     videoId: string | null;
@@ -725,11 +729,35 @@ export class AudioEngine {
      * would otherwise read another tab's playhead. The track id is the discriminator: the
      * events carry it, and only the engine that loaded it matches.
      */
-    if (this.rustTrackId) {
-      return rustAudio.getPositionTrackId() === this.rustTrackId ? rustAudio.getCurrentTime() : 0;
+    const raw = this.rustTrackId
+      ? (rustAudio.getPositionTrackId() === this.rustTrackId ? rustAudio.getCurrentTime() : 0)
+      : this.audio
+        ? this.audio.currentTime
+        : (this.player?.getCurrentTime() ?? 0);
+
+    /*
+     * Interpolated between real updates.
+     *
+     * The YouTube IFrame API only refreshes getCurrentTime()'s internal value roughly every
+     * 200-300ms (it crosses a postMessage bridge to a cross-origin iframe), so a 60/144Hz
+     * caller sampling it directly sees the same value repeat for several frames in a row — a
+     * synced-lyrics fill that reads this every rAF tick renders as a stepped 15-20fps animation
+     * instead of a smooth one, even though playback itself never actually stutters.
+     * Interpolating with a real-time clock between observed changes smooths that out without
+     * drifting, since every new raw value re-anchors the estimate.
+     */
+    const now = performance.now();
+    if (raw !== this.lastRawTime) {
+      this.lastRawTime = raw;
+      this.lastRawTimeAt = now;
+      return raw;
     }
-    if (this.audio) return this.audio.currentTime;
-    return this.player?.getCurrentTime() ?? 0;
+    if (this.lastRawTimeAt === 0) {
+      this.lastRawTimeAt = now;
+      return raw;
+    }
+    const elapsedSec = (now - this.lastRawTimeAt) / 1000;
+    return this.lastRawTime + elapsedSec * this.playbackRate;
   }
 
   getDuration(): number {
