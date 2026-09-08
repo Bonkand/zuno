@@ -511,11 +511,13 @@ html[data-fx-off~="marquee"] .animate-marquee-vertical {
 /*
  * Lyrics: the sung portion of the active line, wiped left to right.
  *
- * `--sweep` is written straight onto the element by the animation frame that tracks
+ * `--sweep` is written straight onto each word's own node by the animation frame that tracks
  * playback — a percentage in React state would re-render the whole column sixty times a
  * second to move one gradient stop. The two stops are offset so the edge is a soft ramp
  * rather than a hard cut, which at display sizes reads as light moving across the words
- * instead of a progress bar clipped to text.
+ * instead of a progress bar clipped to text. Applied per word (not once across the whole
+ * line) so a line that wraps onto a second visual row still lights up in reading order —
+ * see computeWordFractions in LyricsView.tsx.
  */
 .lyric-sweep {
   background-image: linear-gradient(
