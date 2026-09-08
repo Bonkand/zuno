@@ -46,6 +46,38 @@ const DEPTH = [
   { opacity: 0.12, blur: 0 },
 ];
 
+/**
+ * Splits a line into word and whitespace tokens, alternating. Whitespace is kept verbatim
+ * (not collapsed) so re-joining the tokens reproduces the original text exactly.
+ */
+function splitLineTokens(text: string): string[] {
+  return text.split(/(\s+)/).filter((token) => token.length > 0);
+}
+
+/**
+ * Fractional [start, end) of each word token's own slice of the line's sweep progress,
+ * weighted by character count.
+ *
+ * There is no per-word timing in the LRC data — this is the same linear-through-the-line
+ * assumption `getLineProgress` already makes, just distributed across words instead of
+ * collapsed into one number for the whole line. A single gradient painted across the whole
+ * line reads its left-right position against the element's full bounding box, which is the
+ * same box for every wrapped visual row, so a line that wraps onto a second row lit up both
+ * rows identically instead of respecting reading order. Giving each word its own fraction of
+ * the progress fixes that without needing per-word timestamps the data doesn't have.
+ */
+function computeWordFractions(text: string): [number, number][] {
+  const tokens = splitLineTokens(text);
+  const wordLengths = tokens.filter((token) => token.trim().length > 0).map((token) => token.length);
+  const total = wordLengths.reduce((sum, len) => sum + len, 0) || 1;
+  let cursor = 0;
+  return wordLengths.map((len) => {
+    const start = cursor / total;
+    cursor += len;
+    return [start, cursor / total];
+  });
+}
+
 /*
  * Type scale, driven by the container's width so opening the queue panel reflows it rather
  * than overflowing. The Tailwind size classes on the elements are a floor, not decoration:
@@ -95,6 +127,8 @@ export function LyricsView({ onClose }: LyricsViewProps) {
 
   const scrollerRef = useRef<HTMLDivElement>(null);
   const lineRefs = useRef<Array<HTMLElement | null>>([]);
+  /** Refs to each active-eligible word span, indexed [lineIndex][wordIndex]. */
+  const wordRefs = useRef<Array<Array<HTMLElement | null>>>([]);
   const resumeTimerRef = useRef<number | null>(null);
 
   const lines = lyrics?.lines ?? [];
@@ -107,6 +141,14 @@ export function LyricsView({ onClose }: LyricsViewProps) {
   linesRef.current = lines;
   const durationRef = useRef(track?.durationSec);
   durationRef.current = track?.durationSec;
+  /* Same pattern as linesRef: recomputed every render from `lines`, read inside the frame
+     loop via ref so the loop itself never needs to restart when it changes. */
+  const wordFractions = useMemo(
+    () => lines.map((line) => computeWordFractions(line.text)),
+    [lines],
+  );
+  const wordFractionsRef = useRef(wordFractions);
+  wordFractionsRef.current = wordFractions;
 
   /** Lines a listener can actually land on: blanks are instrumental beats, not targets. */
   const seekableIndices = useMemo(() => {
@@ -141,6 +183,7 @@ export function LyricsView({ onClose }: LyricsViewProps) {
     setActiveIndex(-1);
     setFocusIndex(null);
     lineRefs.current = [];
+    wordRefs.current = [];
     if (!track) return;
 
     setIsLoading(true);
@@ -245,10 +288,21 @@ export function LyricsView({ onClose }: LyricsViewProps) {
       }
 
       if (reduce || next < 0) return;
-      /* The sweep is written straight onto the node. It changes every frame by definition,
-         so routing it through state would undo the optimisation directly above. */
+      /* The sweep is written straight onto each word's node, one custom property per word
+         instead of one per line — see computeWordFractions for why. It changes every frame
+         by definition, so routing it through state would undo the optimisation above. */
       const progress = getLineProgress(currentLines, next, time, durationRef.current);
-      lineRefs.current[next]?.style.setProperty("--sweep", `${(progress * 100).toFixed(1)}%`);
+      const words = wordRefs.current[next];
+      const fractions = wordFractionsRef.current[next];
+      if (words && fractions) {
+        for (let w = 0; w < words.length; w += 1) {
+          const [wordStart, wordEnd] = fractions[w] ?? [0, 1];
+          const span = wordEnd - wordStart;
+          const local = span > 0 ? (progress - wordStart) / span : (progress >= wordEnd ? 1 : 0);
+          const clamped = Math.min(1, Math.max(0, local));
+          words[w]?.style.setProperty("--sweep", `${(clamped * 100).toFixed(1)}%`);
+        }
+      }
     };
 
     sample();
@@ -369,6 +423,13 @@ export function LyricsView({ onClose }: LyricsViewProps) {
   const registerLine = useCallback((index: number, element: HTMLElement | null) => {
     lineRefs.current[index] = element;
   }, []);
+  const registerWord = useCallback(
+    (lineIndex: number, wordIndex: number, element: HTMLElement | null) => {
+      const forLine = wordRefs.current[lineIndex] ?? (wordRefs.current[lineIndex] = []);
+      forLine[wordIndex] = element;
+    },
+    [],
+  );
 
   /*
    * Roving tabindex.
@@ -583,6 +644,7 @@ export function LyricsView({ onClose }: LyricsViewProps) {
                         onSeek={seekLine}
                         onFocusLine={setFocusIndex}
                         register={registerLine}
+                        registerWord={registerWord}
                       />
                     ) : (
                       <p
@@ -660,6 +722,7 @@ interface SyncedLineProps {
   onSeek: (index: number) => void;
   onFocusLine: (index: number) => void;
   register: (index: number, element: HTMLElement | null) => void;
+  registerWord: (lineIndex: number, wordIndex: number, element: HTMLElement | null) => void;
 }
 
 /**
@@ -686,6 +749,7 @@ const SyncedLine = memo(function SyncedLine({
   onSeek,
   onFocusLine,
   register,
+  registerWord,
 }: SyncedLineProps) {
   const depth = DEPTH[Math.min(distance, DEPTH.length - 1)];
   const attach = useCallback(
@@ -695,6 +759,13 @@ const SyncedLine = memo(function SyncedLine({
 
   // Check if there's letters
   const isArabic = /[\u0600-\u06FF]/.test(text);
+
+  const tokens = useMemo(() => splitLineTokens(text), [text]);
+  /* -1 marks a whitespace token: rendered as a plain string, no span, no ref, no sweep. */
+  const wordIndexByToken = useMemo(() => {
+    let counter = -1;
+    return tokens.map((token) => (token.trim() ? (counter += 1) : -1));
+  }, [tokens]);
 
   // An empty LRC line is a real instrumental beat, not junk. It keeps its slot so the timing
   // stays honest, and announces itself when it comes up.
@@ -732,15 +803,14 @@ const SyncedLine = memo(function SyncedLine({
       // Using (text-start) instead of (text-left)
       className={cn(
         "group relative origin-left text-pretty text-start font-bold leading-[1.16] tracking-[-0.035em]",
-        "transition-[opacity,filter,color] duration-500 ease-out",
+        "transition-[opacity,color] duration-500 ease-out",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
         /*
-         * The sweep paints its own colour through background-clip, so the active line must
-         * not also carry a text colour — and it is only safe while the sampling loop is
-         * running. Under reduced motion nothing writes `--sweep`, so the line would stick at
-         * the gradient's 0% end and render dimmer than its neighbours.
+         * The sweep now paints per word (see below), not on this element — a line stays
+         * plain `text-foreground` unless it's actively sweeping, same condition as before,
+         * just no longer the thing that carries the gradient itself.
          */
-        isActive && !reduce ? "lyric-sweep" : "text-foreground",
+        (!isActive || reduce) && "text-foreground",
         !isActive && "hover:opacity-100",
       )}
       style={{
@@ -761,7 +831,22 @@ const SyncedLine = memo(function SyncedLine({
           isActive ? "opacity-100" : "opacity-0 group-hover:opacity-40",
         )}
       />
-      {text}
+      {tokens.map((token, tokenIndex) => {
+        const wordIndex = wordIndexByToken[tokenIndex];
+        if (wordIndex === -1) return token;
+        return (
+          <span
+            key={tokenIndex}
+            ref={(element) => registerWord(index, wordIndex, element)}
+            /* Under reduced motion nothing writes `--sweep` (see the sampling loop), so an
+               applied gradient would stick at its 0% end and render dimmer than its
+               neighbours — same guard the line-level class used to carry. */
+            className={isActive && !reduce ? "lyric-sweep" : undefined}
+          >
+            {token}
+          </span>
+        );
+      })}
       {/* Sized in `em` so it tracks the line it belongs to, and deliberately quieter: it is
           a gloss on the lyric, not a second lyric competing with it. */}
       {translation && (
