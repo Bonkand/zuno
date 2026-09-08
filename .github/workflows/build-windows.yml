@@ -32,6 +32,17 @@ jobs:
       - name: Install frontend deps
         run: npm ci
 
+      # Il progetto ha l'updater di Tauri configurato con una chiave pubblica nel
+      # tauri.conf.json: senza una chiave privata corrispondente il build fallisce alla firma
+      # del bundle. Non ci serve l'updater per un exe da uso locale, quindi ne generiamo una
+      # usa-e-getta ad ogni run: soddisfa il tool di build, non serve conservarla.
+      - name: Generate throwaway updater signing key
+        shell: bash
+        run: |
+          npx --yes @tauri-apps/cli signer generate -w /tmp/private.key --password ""
+          echo "TAURI_SIGNING_PRIVATE_KEY=$(cat /tmp/private.key)" >> "$GITHUB_ENV"
+          echo "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=" >> "$GITHUB_ENV"
+
       - name: Build Tauri app
         run: npm run tauri build
 
