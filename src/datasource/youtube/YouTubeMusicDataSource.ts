@@ -33,6 +33,7 @@ import type {
   FeedNotification,
   LibrarySnapshot,
   Lyrics,
+  LyricWord,
   LyricsSourceAttempt,
   Playlist,
   ResolvedLink,
@@ -199,6 +200,42 @@ type BetterLyricsResponse = {
   ttml?: string | null;
 };
 
+type MusixmatchTokenResponse = {
+  message?: {
+    header?: { status_code?: number };
+    body?: { user_token?: string };
+  };
+};
+
+type MusixmatchMatcherResponse = {
+  message?: {
+    header?: { status_code?: number };
+    body?: {
+      track?: {
+        commontrack_id?: number;
+        track_length?: number;
+      };
+    };
+  };
+};
+
+type MusixmatchRichsyncResponse = {
+  message?: {
+    header?: { status_code?: number };
+    body?: {
+      richsync?: {
+        richsync_body?: string;
+      };
+    };
+  };
+};
+
+type MusixmatchRichsyncLine = {
+  ts: number;
+  te: number;
+  l: Array<{ c: string; o: number }>;
+  x: string;
+};
 /* Rank used to live on the result as a `priority` number that nothing ever read — the winner
    was really decided by the order of an array literal. It is now the LYRICS_SOURCES table. */
 type LyricsProviderResult = Lyrics;
@@ -446,6 +483,7 @@ export class YouTubeMusicDataSource extends DataSource {
   private readonly suggestionRefreshPromises = new Map<string, Promise<string[]>>();
   private readonly recommendationRefreshPromises = new Map<string, Promise<Track[]>>();
   private readonly lyricsRefreshPromises = new Map<string, Promise<Lyrics>>();
+  private musixmatchTokenPromise: Promise<string | null> | null = null;
   private readonly artistSubscriptionOverrides = new Map<string, { subscribed: boolean; expiresAt: number }>();
 
   constructor() {
@@ -4656,6 +4694,7 @@ export class YouTubeMusicDataSource extends DataSource {
 
     const runners: Record<string, () => Promise<Lyrics | null>> = {
       "lrclib-exact": () => this.fetchLrcLibExactLyrics(track),
+      "musixmatch-richsync": () => this.fetchMusixmatchRichSync(track),
       betterlyrics: () => this.fetchBetterLyrics(track),
       "lrclib-search": () => this.fetchLrcLibSearchLyrics(track),
       "youtube-transcript": () => this.fetchYouTubeTranscriptLyrics(track),
@@ -4928,7 +4967,123 @@ export class YouTubeMusicDataSource extends DataSource {
 
     return null;
   }
+private async getMusixmatchToken(): Promise<string | null> {
+    if (!this.musixmatchTokenPromise) {
+      this.musixmatchTokenPromise = (async () => {
+        try {
+          const response = await tauriFetch(
+            "https://apic-desktop.musixmatch.com/ws/1.1/token.get?app_id=web-desktop-app-v1.0",
+            { headers: this.getLyricsRequestHeaders(), timeoutMs: 4_000 },
+          );
+          if (!response.ok) return null;
+          const body = await response.json() as MusixmatchTokenResponse;
+          const token = body.message?.body?.user_token;
+          return token && token !== "UpgradeOnlyUpgradeUp" ? token : null;
+        } catch (error) {
+          logInternalWarn("YouTubeMusicDataSource.getMusixmatchToken failed", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+          return null;
+        }
+      })();
+    }
+    return this.musixmatchTokenPromise;
+  }
 
+  private async fetchMusixmatchRichSync(track: Track): Promise<LyricsProviderResult | null> {
+    const durationSec = this.getRoundedDurationSec(track);
+    if (!durationSec) return null;
+
+    const token = await this.getMusixmatchToken();
+    if (!token) return null;
+
+    for (const query of this.getLyricsQueries(track)) {
+      try {
+        const matchParams = new URLSearchParams({
+          format: "json",
+          namespace: "lyrics_richsynced",
+          app_id: "web-desktop-app-v1.0",
+          q_track: query.title,
+          q_artist: query.artist,
+          q_duration: String(durationSec),
+          usertoken: token,
+        });
+        const matchResponse = await tauriFetch(
+          `https://apic-desktop.musixmatch.com/ws/1.1/matcher.track.get?${matchParams}`,
+          { headers: this.getLyricsRequestHeaders(), timeoutMs: 4_000 },
+        );
+        if (!matchResponse.ok) continue;
+        const matchBody = await matchResponse.json() as MusixmatchMatcherResponse;
+        const commonTrackId = matchBody.message?.body?.track?.commontrack_id;
+        const matchedDuration = matchBody.message?.body?.track?.track_length;
+        if (!commonTrackId) continue;
+        if (typeof matchedDuration === "number" && Math.abs(matchedDuration - durationSec) > 2) continue;
+
+        const richsyncParams = new URLSearchParams({
+          format: "json",
+          app_id: "web-desktop-app-v1.0",
+          commontrack_id: String(commonTrackId),
+          usertoken: token,
+        });
+        const richsyncResponse = await tauriFetch(
+          `https://apic-desktop.musixmatch.com/ws/1.1/track.richsync.get?${richsyncParams}`,
+          { headers: this.getLyricsRequestHeaders(), timeoutMs: 4_000 },
+        );
+        if (!richsyncResponse.ok) continue;
+        const richsyncBody = await richsyncResponse.json() as MusixmatchRichsyncResponse;
+        const rawBody = richsyncBody.message?.body?.richsync?.richsync_body;
+        if (!rawBody) continue;
+
+        const lines = this.parseMusixmatchRichsync(rawBody);
+        if (lines.length === 0) continue;
+
+        logInternalInfo("YouTubeMusicDataSource.getLyrics Musixmatch success", {
+          trackId: track.id,
+          lineCount: lines.length,
+        });
+        return { lines, timing: "synced", sourceLabel: "Musixmatch" };
+      } catch (error) {
+        logInternalWarn("YouTubeMusicDataSource.getLyrics Musixmatch unavailable", {
+          trackId: track.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    return null;
+  }
+
+  private parseMusixmatchRichsync(rawBody: string): Lyrics["lines"] {
+    let raw: MusixmatchRichsyncLine[];
+    try {
+      raw = JSON.parse(rawBody) as MusixmatchRichsyncLine[];
+    } catch {
+      return [];
+    }
+    if (!Array.isArray(raw)) return [];
+
+    return raw
+      .map((line) => {
+        const text = (line.x ?? line.l?.map((word) => word.c).join("") ?? "").trim();
+        if (!text || typeof line.ts !== "number") return null;
+
+        const words: LyricWord[] = (line.l ?? [])
+          .filter((word) => word.c.trim().length > 0)
+          .map((word, index, all) => ({
+            text: word.c,
+            startTimeSec: line.ts + word.o,
+            endTimeSec: index + 1 < all.length ? line.ts + all[index + 1].o : line.te,
+          }));
+
+        return {
+          text,
+          startTimeSec: line.ts,
+          endTimeSec: line.te,
+          words: words.length > 0 ? words : undefined,
+        };
+      })
+      .filter((line): line is NonNullable<typeof line> => line !== null);
+  }
   private toLrcLibLyrics(
     track: Track,
     match: LrcLibTrack,
