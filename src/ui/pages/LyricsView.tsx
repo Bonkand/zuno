@@ -23,7 +23,7 @@ import { OFFSET_STEP_SEC, setLyricsOffset, useLyricsOffset } from "../settings/l
 import { useLyricsFontScale } from "../settings/lyricsFontScale";
 import { TRANSLATION_OFF, useLyricsTranslationLang } from "../settings/lyricsTranslation";
 import { translateLines } from "../../datasource/translate";
-import { findActiveLineIndex, getLineProgress, isSyncedLyrics } from "./lyricsTiming";
+import { findActiveLineIndex, isSyncedLyrics } from "./lyricsTiming";
 
 /** How long a manual scroll keeps the auto-follow parked. */
 const AUTO_SCROLL_RESUME_MS = 4500;
@@ -76,6 +76,38 @@ function computeWordFractions(text: string): [number, number][] {
     cursor += len;
     return [start, cursor / total];
   });
+}
+
+/**
+ * Absolute [start, end] seconds for each word in a line.
+ *
+ * Real timestamps when the source gave them (`line.words`, e.g. Musixmatch Rich Sync) — used
+ * exactly as provided, no estimation involved. Estimated by character weight over the line's
+ * own time window otherwise, same as before: still the best guess available when the data
+ * simply does not carry per-word timing (LRCLIB, BetterLyrics).
+ */
+function computeWordTimings(line: {
+  text: string;
+  startTimeSec?: number;
+  endTimeSec?: number;
+  words?: Array<{ text: string; startTimeSec: number; endTimeSec?: number }>;
+}): [number, number][] {
+  const lineStart = line.startTimeSec;
+  if (lineStart === undefined) return [];
+
+  if (line.words && line.words.length > 0) {
+    return line.words.map((word, index, all) => [
+      word.startTimeSec,
+      word.endTimeSec ?? all[index + 1]?.startTimeSec ?? line.endTimeSec ?? word.startTimeSec,
+    ]);
+  }
+
+  const lineEnd = line.endTimeSec ?? lineStart;
+  const span = lineEnd - lineStart;
+  return computeWordFractions(line.text).map(([startFrac, endFrac]) => [
+    lineStart + startFrac * span,
+    lineStart + endFrac * span,
+  ]);
 }
 
 /*
@@ -143,12 +175,12 @@ export function LyricsView({ onClose }: LyricsViewProps) {
   durationRef.current = track?.durationSec;
   /* Same pattern as linesRef: recomputed every render from `lines`, read inside the frame
      loop via ref so the loop itself never needs to restart when it changes. */
-  const wordFractions = useMemo(
-    () => lines.map((line) => computeWordFractions(line.text)),
+  const wordTimings = useMemo(
+    () => lines.map((line) => computeWordTimings(line)),
     [lines],
   );
-  const wordFractionsRef = useRef(wordFractions);
-  wordFractionsRef.current = wordFractions;
+  const wordTimingsRef = useRef(wordTimings);
+  wordTimingsRef.current = wordTimings;
 
   /** Lines a listener can actually land on: blanks are instrumental beats, not targets. */
   const seekableIndices = useMemo(() => {
@@ -289,18 +321,32 @@ export function LyricsView({ onClose }: LyricsViewProps) {
 
       if (reduce || next < 0) return;
       /* The sweep is written straight onto each word's node, one custom property per word
-         instead of one per line — see computeWordFractions for why. It changes every frame
+         instead of one per line — see computeWordTimings for why. It changes every frame
          by definition, so routing it through state would undo the optimisation above. */
-      const progress = getLineProgress(currentLines, next, time, durationRef.current);
       const words = wordRefs.current[next];
-      const fractions = wordFractionsRef.current[next];
-      if (words && fractions) {
+      const timings = wordTimingsRef.current[next];
+      if (words && timings) {
         for (let w = 0; w < words.length; w += 1) {
-          const [wordStart, wordEnd] = fractions[w] ?? [0, 1];
-          const span = wordEnd - wordStart;
-          const local = span > 0 ? (progress - wordStart) / span : (progress >= wordEnd ? 1 : 0);
-          const clamped = Math.min(1, Math.max(0, local));
-          words[w]?.style.setProperty("--sweep", `${(clamped * 100).toFixed(1)}%`);
+          const [wordStart, wordEnd] = timings[w] ?? [0, 0];
+          /*
+           * The gradient's two stops sit a fixed -4%/+7% around --sweep, a soft ramp meant
+           * for one sweep on a whole line. Clamping a not-yet-reached word's value to a flat
+           * 0% put that same ramp right at its own start, so every future word picked up a
+           * faint glow on its first letter before its turn. Pushing far outside the word's
+           * own 0-100% range keeps both stops off to one side, so the word reads as a flat
+           * colour — dim ahead of time, fully lit once done — instead of carrying its own
+           * copy of the ramp.
+           */
+          let sweepPercent: number;
+          if (time <= wordStart) {
+            sweepPercent = -20;
+          } else if (time >= wordEnd) {
+            sweepPercent = 120;
+          } else {
+            const span = wordEnd - wordStart;
+            sweepPercent = span > 0 ? ((progress - wordStart) / span) * 100 : 0;
+          }
+          words[w]?.style.setProperty("--sweep", `${sweepPercent.toFixed(1)}%`);
         }
       }
     };
