@@ -344,7 +344,7 @@ export function LyricsView({ onClose }: LyricsViewProps) {
             sweepPercent = 120;
           } else {
             const span = wordEnd - wordStart;
-            sweepPercent = span > 0 ? ((progress - wordStart) / span) * 100 : 0;
+            sweepPercent = span > 0 ? ((time - wordStart) / span) * 100 : 0;
           }
           words[w]?.style.setProperty("--sweep", `${sweepPercent.toFixed(1)}%`);
         }
