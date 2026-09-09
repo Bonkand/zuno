@@ -35,6 +35,13 @@ export interface LyricLine {
   text: string;
   startTimeSec?: number;
   endTimeSec?: number;
+  words?: LyricWord[];
+}
+
+export interface LyricWord {
+  text: string;
+  startTimeSec: number;
+  endTimeSec?: number;
 }
 
 export type LyricsSourceStatus = "hit" | "miss" | "timeout" | "error" | "skipped";
