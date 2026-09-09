@@ -40,6 +40,14 @@ export const LYRICS_SOURCES: LyricsSource[] = [
     requiresDuration: true,
     note: "Line-synced, matched on title, artist and exact duration — the same recording.",
   },
+    {
+    id: "musixmatch-richsync",
+    label: "Musixmatch",
+    timeoutMs: 4_000,
+    wave: 1,
+    requiresDuration: true,
+    note: "Word-level Rich Sync, matched on title, artist and duration — via an unofficial API.",
+  },
   {
     id: "betterlyrics",
     label: "BetterLyrics",
