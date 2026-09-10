@@ -212,8 +212,12 @@ type MusixmatchMatcherResponse = {
     header?: { status_code?: number };
     body?: {
       track?: {
+        track_id?: number;
         commontrack_id?: number;
+        track_name?: string;
+        artist_name?: string;
         track_length?: number;
+        has_richsync?: number;
       };
     };
   };
@@ -4996,57 +5000,110 @@ private async getMusixmatchToken(): Promise<string | null> {
 
     const token = await this.getMusixmatchToken();
     if (!token) return null;
+    const headers = this.getMusixmatchRequestHeaders(token);
+    const matcherVariants: Array<{ label: string; includeDuration: boolean; includeSubtitleLength: boolean }> = [
+      { label: "duration+subtitle", includeDuration: true, includeSubtitleLength: true },
+      { label: "duration", includeDuration: true, includeSubtitleLength: false },
+      { label: "title-artist", includeDuration: false, includeSubtitleLength: false },
+    ];
 
     for (const query of this.getLyricsQueries(track)) {
-      try {
-        const matchParams = new URLSearchParams({
-          format: "json",
-          namespace: "lyrics_richsynced",
-          app_id: "web-desktop-app-v1.0",
-          q_track: query.title,
-          q_artist: query.artist,
-          q_duration: String(durationSec),
-          usertoken: token,
-        });
-        const matchResponse = await tauriFetch(
-          `https://apic-desktop.musixmatch.com/ws/1.1/matcher.track.get?${matchParams}`,
-          { headers: this.getLyricsRequestHeaders(), timeoutMs: 4_000 },
-        );
-        if (!matchResponse.ok) continue;
-        const matchBody = await matchResponse.json() as MusixmatchMatcherResponse;
-        const commonTrackId = matchBody.message?.body?.track?.commontrack_id;
-        const matchedDuration = matchBody.message?.body?.track?.track_length;
-        if (!commonTrackId) continue;
-        if (typeof matchedDuration === "number" && Math.abs(matchedDuration - durationSec) > 2) continue;
+      for (const variant of matcherVariants) {
+        try {
+          const matchParams = new URLSearchParams({
+            format: "json",
+            namespace: "lyrics_richsynced",
+            app_id: "web-desktop-app-v1.0",
+            q_track: query.title,
+            q_artist: query.artist,
+            f_has_richsync: "1",
+            usertoken: token,
+          });
+          if (query.album) matchParams.set("q_album", query.album);
+          if (variant.includeDuration) matchParams.set("q_duration", String(durationSec));
+          if (variant.includeSubtitleLength) {
+            matchParams.set("f_subtitle_length", String(durationSec));
+          }
+          const matchResponse = await tauriFetch(
+            `https://apic-desktop.musixmatch.com/ws/1.1/matcher.track.get?${matchParams}`,
+            { headers, timeoutMs: 4_000 },
+          );
+          if (!matchResponse.ok) continue;
+          const matchBody = await matchResponse.json() as MusixmatchMatcherResponse;
+          const matchStatusCode = matchBody.message?.header?.status_code;
+          const matchedTrack = matchBody.message?.body?.track;
+          if (!matchedTrack) {
+            logInternalDebug("YouTubeMusicDataSource.getLyrics Musixmatch no track match", {
+              trackId: track.id,
+              variant: variant.label,
+              statusCode: matchStatusCode,
+              queryTitle: query.title,
+              queryArtist: query.artist,
+              queryAlbum: query.album,
+              usedDuration: variant.includeDuration,
+            });
+            continue;
+          }
+          const commonTrackId = matchedTrack.commontrack_id;
+          const matchedDuration = matchedTrack.track_length;
+          if (!commonTrackId) continue;
+          if (typeof matchedDuration === "number" && Math.abs(matchedDuration - durationSec) > 2) {
+            logInternalDebug("YouTubeMusicDataSource.getLyrics Musixmatch duration mismatch", {
+              trackId: track.id,
+              variant: variant.label,
+              matchedDuration,
+              expectedDuration: durationSec,
+              matchedTrackId: matchedTrack.track_id,
+              matchedTrackName: matchedTrack.track_name,
+              matchedArtistName: matchedTrack.artist_name,
+            });
+            continue;
+          }
 
-        const richsyncParams = new URLSearchParams({
-          format: "json",
-          app_id: "web-desktop-app-v1.0",
-          commontrack_id: String(commonTrackId),
-          usertoken: token,
-        });
-        const richsyncResponse = await tauriFetch(
-          `https://apic-desktop.musixmatch.com/ws/1.1/track.richsync.get?${richsyncParams}`,
-          { headers: this.getLyricsRequestHeaders(), timeoutMs: 4_000 },
-        );
-        if (!richsyncResponse.ok) continue;
-        const richsyncBody = await richsyncResponse.json() as MusixmatchRichsyncResponse;
-        const rawBody = richsyncBody.message?.body?.richsync?.richsync_body;
-        if (!rawBody) continue;
+          const richsyncParams = new URLSearchParams({
+            format: "json",
+            app_id: "web-desktop-app-v1.0",
+            commontrack_id: String(commonTrackId),
+            usertoken: token,
+          });
+          const richsyncResponse = await tauriFetch(
+            `https://apic-desktop.musixmatch.com/ws/1.1/track.richsync.get?${richsyncParams}`,
+            { headers, timeoutMs: 4_000 },
+          );
+          if (!richsyncResponse.ok) continue;
+          const richsyncBody = await richsyncResponse.json() as MusixmatchRichsyncResponse;
+          const richsyncStatusCode = richsyncBody.message?.header?.status_code;
+          const rawBody = richsyncBody.message?.body?.richsync?.richsync_body;
+          if (!rawBody) {
+            logInternalDebug("YouTubeMusicDataSource.getLyrics Musixmatch empty richsync body", {
+              trackId: track.id,
+              variant: variant.label,
+              statusCode: richsyncStatusCode,
+              commonTrackId,
+            });
+            continue;
+          }
 
-        const lines = this.parseMusixmatchRichsync(rawBody);
-        if (lines.length === 0) continue;
+          const lines = this.parseMusixmatchRichsync(rawBody);
+          if (lines.length === 0) continue;
 
-        logInternalInfo("YouTubeMusicDataSource.getLyrics Musixmatch success", {
-          trackId: track.id,
-          lineCount: lines.length,
-        });
-        return { lines, timing: "synced", sourceLabel: "Musixmatch" };
-      } catch (error) {
-        logInternalWarn("YouTubeMusicDataSource.getLyrics Musixmatch unavailable", {
-          trackId: track.id,
-          error: error instanceof Error ? error.message : String(error),
-        });
+          logInternalInfo("YouTubeMusicDataSource.getLyrics Musixmatch success", {
+            trackId: track.id,
+            lineCount: lines.length,
+            variant: variant.label,
+            matchStatusCode,
+            richsyncStatusCode,
+          });
+          return { lines, timing: "synced", sourceLabel: "Musixmatch" };
+        } catch (error) {
+          logInternalWarn("YouTubeMusicDataSource.getLyrics Musixmatch unavailable", {
+            trackId: track.id,
+            queryTitle: query.title,
+            queryArtist: query.artist,
+            variant: variant.label,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
       }
     }
 
@@ -5113,6 +5170,15 @@ private async getMusixmatchToken(): Promise<string | null> {
     return {
       Accept: "application/json",
       "User-Agent": "Zuno/1.0",
+    };
+  }
+
+  private getMusixmatchRequestHeaders(token: string): Record<string, string> {
+    return {
+      ...this.getLyricsRequestHeaders(),
+      Origin: "https://www.musixmatch.com",
+      Referer: "https://www.musixmatch.com/",
+      Cookie: `x-mxm-token-guid=${token}`,
     };
   }
 
