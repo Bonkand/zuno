@@ -91,6 +91,20 @@ export async function hydrateOutputDevice(): Promise<void> {
   // it.
   void push(read());
   window.dispatchEvent(new Event(CHANGE_EVENT));
+
+  const handleDeviceChange = () => {
+    // When the OS default device changes, the Rust engine (which holds a handle to the old one)
+    // is left playing to a dead sink or the wrong device. Pushing `null` again forces it to
+    // reopen the new default sink and reconnect the decks.
+    const current = read();
+    if (current === null) void push(null);
+  };
+
+  navigator.mediaDevices?.addEventListener("devicechange", handleDeviceChange);
+
+  import("../../player/rustAudio").then(({ listenToDefaultDeviceChange }) => {
+    listenToDefaultDeviceChange(handleDeviceChange);
+  });
 }
 
 export function useOutputDevice(): string | null {

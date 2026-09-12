@@ -647,6 +647,9 @@ fn run(
         rate: 1.0,
         playing: false,
         fade: None,
+        is_default_device: initial_device.is_none(),
+        last_default_device_id: if initial_device.is_none() { get_default_device_id() } else { None },
+        next_device_check: Instant::now() + Duration::from_secs(2),
     };
 
     if ready.send(Ok(())).is_err() {
@@ -679,6 +682,24 @@ fn run(
     }
 }
 
+fn get_default_device_id() -> Option<String> {
+    #[cfg(target_os = "linux")]
+    {
+        // Polling pactl every 2 seconds is too heavy, and cpal's default_output_device() on ALSA
+        // always returns "default" without reflecting PulseAudio/PipeWire sink changes.
+        // We rely entirely on the frontend's `navigator.mediaDevices.ondevicechange` on Linux,
+        // which Chromium correctly wires to the sound server.
+        None
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        use rodio::cpal::traits::{HostTrait, DeviceTrait};
+        rodio::cpal::default_host()
+            .default_output_device()
+            .and_then(|device| device.name().ok())
+    }
+}
+
 struct Engine {
     app: AppHandle,
     /// Dropping this closes the output device, so it outlives every deck connected to it.
@@ -690,6 +711,9 @@ struct Engine {
     rate: f32,
     playing: bool,
     fade: Option<Fade>,
+    is_default_device: bool,
+    last_default_device_id: Option<String>,
+    next_device_check: Instant,
 }
 
 impl Engine {
@@ -905,6 +929,9 @@ impl Engine {
                     self.decks = decks;
                     self.active = 0;
                     self.playing = false;
+                    self.is_default_device = id.is_none();
+                    self.last_default_device_id = if id.is_none() { get_default_device_id() } else { None };
+                    self.next_device_check = Instant::now() + Duration::from_secs(2);
                     let _ = reply.send(Ok(()));
                 }
                 Err(error) => {
@@ -951,6 +978,15 @@ impl Engine {
     }
 
     fn tick(&mut self) {
+        if self.is_default_device && Instant::now() >= self.next_device_check {
+            self.next_device_check = Instant::now() + Duration::from_secs(2);
+            let current = get_default_device_id();
+            if current != self.last_default_device_id {
+                self.last_default_device_id = current;
+                let _ = self.app.emit("native-audio-default-device-changed", ());
+            }
+        }
+
         let index = self.active;
         let Some(track_id) = self.decks[index].track_id.clone() else { return };
 
@@ -969,6 +1005,7 @@ impl Engine {
         if !self.playing {
             return;
         }
+
         let _ = self.app.emit(
             "native-audio-position",
             PositionEvent {
