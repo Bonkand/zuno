@@ -33,20 +33,20 @@ export interface LyricsSource {
  */
 export const LYRICS_SOURCES: LyricsSource[] = [
   {
+    id: "musixmatch-richsync",
+    label: "Musixmatch",
+    timeoutMs: 8_000,
+    wave: 1,
+    requiresDuration: true,
+    note: "Word-level Rich Sync, matched on title, artist and duration — takes priority over line-synced sources when it has a match, since it carries strictly more timing information.",
+  },
+  {
     id: "lrclib-exact",
     label: "LRCLIB",
     timeoutMs: 2_500,
     wave: 1,
     requiresDuration: true,
     note: "Line-synced, matched on title, artist and exact duration — the same recording.",
-  },
-    {
-    id: "musixmatch-richsync",
-    label: "Musixmatch",
-    timeoutMs: 4_000,
-    wave: 1,
-    requiresDuration: true,
-    note: "Word-level Rich Sync, matched on title, artist and duration — via an unofficial API.",
   },
   {
     id: "betterlyrics",
