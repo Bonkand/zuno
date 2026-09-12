@@ -539,6 +539,7 @@ export class AudioEngine {
     if (this.rustTrackId) void rustAudio.pause().catch(() => {});
     this.audio?.pause();
     this.player?.pauseVideo();
+    this.lastRawTimeAt = 0;
     this.scheduleStandbyTeardown();
   }
 
