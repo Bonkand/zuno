@@ -237,7 +237,7 @@ export function LyricsView({ onClose }: LyricsViewProps) {
     return () => {
       cancelled = true;
     };
-  }, [track?.id, reloadToken]);
+  }, [track?.id, track?.durationSec, reloadToken]);
 
   /*
    * Every provider is a network call, so a song opened offline has nothing to show. Retrying
