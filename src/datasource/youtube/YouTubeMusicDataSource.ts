@@ -234,6 +234,9 @@ type MusixmatchRichsyncResponse = {
   };
 };
 
+const MUSIXMATCH_MOBILE_BASE_URL = "https://apic-appmobile.musixmatch.com/ws/1.1";
+const MUSIXMATCH_MOBILE_APP_ID = "mac-ios-v2.0";
+
 type MusixmatchRichsyncLine = {
   ts: number;
   te: number;
@@ -4971,13 +4974,26 @@ export class YouTubeMusicDataSource extends DataSource {
 
     return null;
   }
-private async getMusixmatchToken(): Promise<string | null> {
+  private getMusixmatchMobileHeaders(token?: string): Record<string, string> {
+    return {
+      Host: "apic-appmobile.musixmatch.com",
+      authority: "apic-appmobile.musixmatch.com",
+      "X-Cookie": `x-mxm-token-guid=${token ?? ""}`,
+      "x-mxm-app-version": "10.1.1",
+      "X-User-Agent": "Musixmatch/2025120901 CFNetwork/3860.300.31 Darwin/25.2.0",
+      "Accept-Language": "en-US,en;q=0.9",
+      Connection: "keep-alive",
+      Accept: "application/json",
+    };
+  }
+
+  private async getMusixmatchToken(): Promise<string | null> {
     if (!this.musixmatchTokenPromise) {
       this.musixmatchTokenPromise = (async () => {
         try {
           const response = await tauriFetch(
-            "https://apic-desktop.musixmatch.com/ws/1.1/token.get?app_id=web-desktop-app-v1.0",
-            { headers: this.getLyricsRequestHeaders(), timeoutMs: 4_000 },
+            `${MUSIXMATCH_MOBILE_BASE_URL}/token.get?app_id=${MUSIXMATCH_MOBILE_APP_ID}`,
+            { headers: this.getMusixmatchMobileHeaders(), timeoutMs: 4_000 },
           );
           if (!response.ok) return null;
           const body = await response.json() as MusixmatchTokenResponse;
@@ -5000,7 +5016,6 @@ private async getMusixmatchToken(): Promise<string | null> {
 
     const token = await this.getMusixmatchToken();
     if (!token) return null;
-    const headers = this.getMusixmatchRequestHeaders(token);
     const matcherVariants: Array<{ label: string; includeDuration: boolean; includeSubtitleLength: boolean }> = [
       { label: "duration+subtitle", includeDuration: true, includeSubtitleLength: true },
       { label: "duration", includeDuration: true, includeSubtitleLength: false },
@@ -5012,10 +5027,9 @@ private async getMusixmatchToken(): Promise<string | null> {
         try {
           const matchParams = new URLSearchParams({
             format: "json",
-            app_id: "web-desktop-app-v1.0",
+            app_id: MUSIXMATCH_MOBILE_APP_ID,
             q_track: query.title,
             q_artist: query.artist,
-            f_has_richsync: "1",
             usertoken: token,
           });
           if (query.album) matchParams.set("q_album", query.album);
@@ -5024,8 +5038,8 @@ private async getMusixmatchToken(): Promise<string | null> {
             matchParams.set("f_subtitle_length", String(durationSec));
           }
           const matchResponse = await tauriFetch(
-            `https://apic-desktop.musixmatch.com/ws/1.1/matcher.track.get?${matchParams}`,
-            { headers, timeoutMs: 4_000 },
+            `${MUSIXMATCH_MOBILE_BASE_URL}/matcher.track.get?${matchParams}`,
+            { headers: this.getMusixmatchMobileHeaders(token), timeoutMs: 4_000 },
           );
           if (!matchResponse.ok) continue;
           const matchBody = await matchResponse.json() as MusixmatchMatcherResponse;
@@ -5059,16 +5073,16 @@ private async getMusixmatchToken(): Promise<string | null> {
             continue;
           }
 
-          const richsyncParams = new URLSearchParams({
-            format: "json",
-            app_id: "web-desktop-app-v1.0",
-            commontrack_id: String(commonTrackId),
-            usertoken: token,
-          });
-          const richsyncResponse = await tauriFetch(
-            `https://apic-desktop.musixmatch.com/ws/1.1/track.richsync.get?${richsyncParams}`,
-            { headers, timeoutMs: 4_000 },
-          );
+        const richsyncParams = new URLSearchParams({
+          format: "json",
+          app_id: MUSIXMATCH_MOBILE_APP_ID,
+          commontrack_id: String(commonTrackId),
+          usertoken: token,
+        });
+        const richsyncResponse = await tauriFetch(
+          `${MUSIXMATCH_MOBILE_BASE_URL}/track.richsync.get?${richsyncParams}`,
+          { headers: this.getMusixmatchMobileHeaders(token), timeoutMs: 4_000 },
+        );
           if (!richsyncResponse.ok) continue;
           const richsyncBody = await richsyncResponse.json() as MusixmatchRichsyncResponse;
           const richsyncStatusCode = richsyncBody.message?.header?.status_code;
@@ -5169,15 +5183,6 @@ private async getMusixmatchToken(): Promise<string | null> {
     return {
       Accept: "application/json",
       "User-Agent": "Zuno/1.0",
-    };
-  }
-
-  private getMusixmatchRequestHeaders(token: string): Record<string, string> {
-    return {
-      ...this.getLyricsRequestHeaders(),
-      Origin: "https://www.musixmatch.com",
-      Referer: "https://www.musixmatch.com/",
-      Cookie: `x-mxm-token-guid=${token}`,
     };
   }
 
