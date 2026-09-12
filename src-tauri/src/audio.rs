@@ -978,6 +978,15 @@ impl Engine {
     }
 
     fn tick(&mut self) {
+        if self.is_default_device && Instant::now() >= self.next_device_check {
+            self.next_device_check = Instant::now() + Duration::from_secs(2);
+            let current = get_default_device_id();
+            if current != self.last_default_device_id {
+                self.last_default_device_id = current;
+                let _ = self.app.emit("native-audio-default-device-changed", ());
+            }
+        }
+
         let index = self.active;
         let Some(track_id) = self.decks[index].track_id.clone() else { return };
 
@@ -995,15 +1004,6 @@ impl Engine {
 
         if !self.playing {
             return;
-        }
-
-        if self.is_default_device && Instant::now() >= self.next_device_check {
-            self.next_device_check = Instant::now() + Duration::from_secs(2);
-            let current = get_default_device_id();
-            if current != self.last_default_device_id {
-                self.last_default_device_id = current;
-                let _ = self.app.emit("native-audio-default-device-changed", ());
-            }
         }
 
         let _ = self.app.emit(
