@@ -310,7 +310,10 @@ export function LyricsView({ onClose }: LyricsViewProps) {
     const sample = () => {
       const time = playerController.getCurrentTime() + offset;
       const currentLines = linesRef.current;
-      const next = findActiveLineIndex(currentLines, time);
+      let next = findActiveLineIndex(currentLines, time + 0.15);
+      if (next >= currentLines.length) {
+        next = currentLines.length - 1;
+      }
 
       /* Committing every frame would re-render the whole column sixty times a second for a
          value that flips a few times a minute. Only the flip is worth a render. */
@@ -337,14 +340,17 @@ export function LyricsView({ onClose }: LyricsViewProps) {
            * colour — dim ahead of time, fully lit once done — instead of carrying its own
            * copy of the ramp.
            */
+          const rawDuration = wordEnd - wordStart;
+          const visualDuration = Math.max(rawDuration, 0.18);
+          const adjustedStart = Math.max(0, wordStart - 0.04);
+
           let sweepPercent: number;
-          if (time <= wordStart) {
+          if (time <= adjustedStart) {
             sweepPercent = -20;
-          } else if (time >= wordEnd) {
+          } else if (time >= adjustedStart + visualDuration) {
             sweepPercent = 120;
           } else {
-            const span = wordEnd - wordStart;
-            sweepPercent = span > 0 ? ((time - wordStart) / span) * 100 : 0;
+            sweepPercent = visualDuration > 0 ? ((time - adjustedStart) / visualDuration) * 100 : 0;
           }
           words[w]?.style.setProperty("--sweep", `${sweepPercent.toFixed(1)}%`);
         }
@@ -872,7 +878,7 @@ const SyncedLine = memo(function SyncedLine({
       <span
         aria-hidden="true"
         className={cn(
-          "absolute top-[0.28em] h-[0.72em] w-[3px] rounded-full bg-primary transition-opacity duration-300",
+          "absolute top-[0.28em] h-[0.72em] w-[3px] rounded-full bg-primary transition-all duration-[280ms] ease-[cubic-bezier(0.22,1,0.36,1)]",
           isArabic ? "-right-5" : "-left-5",
           isActive ? "opacity-100" : "opacity-0 group-hover:opacity-40",
         )}
