@@ -5012,7 +5012,6 @@ private async getMusixmatchToken(): Promise<string | null> {
         try {
           const matchParams = new URLSearchParams({
             format: "json",
-            namespace: "lyrics_richsynced",
             app_id: "web-desktop-app-v1.0",
             q_track: query.title,
             q_artist: query.artist,
