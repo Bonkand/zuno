@@ -189,6 +189,12 @@ export function adoptTransitioned(trackId: string, duration: number): void {
   durationSec = duration;
 }
 
+export function listenToDefaultDeviceChange(callback: () => void): void {
+  void ensureListening().then(() => {
+    void listen<void>("native-audio-default-device-changed", callback);
+  });
+}
+
 export function warn(context: string, error: unknown): void {
   logInternalWarn(context, {
     error: error instanceof Error ? error.message : String(error),

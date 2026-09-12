@@ -539,6 +539,7 @@ export class AudioEngine {
     if (this.rustTrackId) void rustAudio.pause().catch(() => {});
     this.audio?.pause();
     this.player?.pauseVideo();
+    this.lastRawTimeAt = 0;
     this.scheduleStandbyTeardown();
   }
 
@@ -753,7 +754,6 @@ export class AudioEngine {
       return raw;
     }
     if (this.lastRawTimeAt === 0) {
-      this.lastRawTimeAt = now;
       return raw;
     }
     const elapsedSec = (now - this.lastRawTimeAt) / 1000;
