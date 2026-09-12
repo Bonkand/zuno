@@ -4670,12 +4670,13 @@ export class YouTubeMusicDataSource extends DataSource {
     const cached = await getCachedJson<Lyrics>(cacheKey);
     if (cached?.timing === "synced" && cached.lines.length > 0) return cached;
 
-    let refresh = this.lyricsRefreshPromises.get(track.id);
+    const refreshKey = `${track.id}:${track.durationSec ? "with-duration" : "no-duration"}`;
+    let refresh = this.lyricsRefreshPromises.get(refreshKey);
     if (!refresh) {
       refresh = this.fetchSyncedLyrics(track).finally(() => {
-        this.lyricsRefreshPromises.delete(track.id);
+        this.lyricsRefreshPromises.delete(refreshKey);
       });
-      this.lyricsRefreshPromises.set(track.id, refresh);
+      this.lyricsRefreshPromises.set(refreshKey, refresh);
     }
 
     const lyrics = await refresh;
