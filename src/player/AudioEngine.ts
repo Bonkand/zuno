@@ -754,7 +754,6 @@ export class AudioEngine {
       return raw;
     }
     if (this.lastRawTimeAt === 0) {
-      this.lastRawTimeAt = now;
       return raw;
     }
     const elapsedSec = (now - this.lastRawTimeAt) / 1000;
