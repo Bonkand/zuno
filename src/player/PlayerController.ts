@@ -193,6 +193,8 @@ export class PlayerController {
    * clicked. It is dropped on restore, since JSON round-tripping breaks identity.
    */
   private stopAfterTrack: Track | null = null;
+  /** Modes that rely on boundaries rather than times. */
+  private sleepTimerMode: "track" | "album" | null = null;
   /** Wall-clock ms at which the sleep timer fires, or null when it is off. */
   private sleepTimerDeadline: number | null = null;
   private sleepTimerId: number | null = null;
@@ -706,14 +708,21 @@ export class PlayerController {
    * restored afterwards so the next session does not start silent — the usual way a naive
    * sleep timer ruins the following morning.
    */
-  setSleepTimer(minutes: number | null): void {
+  setSleepTimer(value: number | "track" | "album" | null): void {
     this.clearSleepTimer();
-    if (minutes === null || minutes <= 0) {
+    if (value === null || (typeof value === "number" && value <= 0)) {
       this.emit();
       return;
     }
 
-    const durationMs = minutes * 60_000;
+    if (value === "track" || value === "album") {
+      this.sleepTimerMode = value;
+      logInternalInfo("PlayerController.setSleepTimer", { mode: value });
+      this.emit();
+      return;
+    }
+
+    const durationMs = value * 60_000;
     this.sleepTimerDeadline = Date.now() + durationMs;
     const restoreVolume = this.audioEngine.getVolume();
 
@@ -737,12 +746,13 @@ export class PlayerController {
       this.emit();
     }, durationMs) as unknown as number;
 
-    logInternalInfo("PlayerController.setSleepTimer", { minutes });
+    logInternalInfo("PlayerController.setSleepTimer", { minutes: value });
     this.emit();
   }
 
-  /** Remaining milliseconds, or null when no timer is running. */
-  getSleepTimerRemainingMs(): number | null {
+  /** Remaining milliseconds or the active boundary mode, or null when no timer is running. */
+  getSleepTimer(): number | "track" | "album" | null {
+    if (this.sleepTimerMode !== null) return this.sleepTimerMode;
     if (this.sleepTimerDeadline === null) return null;
     return Math.max(0, this.sleepTimerDeadline - Date.now());
   }
@@ -753,6 +763,7 @@ export class PlayerController {
     this.sleepTimerId = null;
     this.sleepFadeId = null;
     this.sleepTimerDeadline = null;
+    this.sleepTimerMode = null;
   }
 
   /** Queues a whole album or playlist behind whatever is already hand-picked. */
@@ -969,6 +980,32 @@ export class PlayerController {
       // Before every other branch: a stream that died is not an end, so it must not trigger
       // repeat-one, consume the stop-after marker, or advance the queue.
       if (await this.recoverFromPrematureEnd()) return;
+
+      if (this.sleepTimerMode === "track") {
+        logInternalInfo("PlayerController.sleepTimerMode reached", { mode: "track" });
+        this.sleepTimerMode = null;
+        this.setState({ status: "paused" });
+        return;
+      }
+
+      if (this.sleepTimerMode === "album" && this.state.currentTrack) {
+        const next = this.queue.all[this.queue.currentIndex + 1] ?? null;
+        const current = this.state.currentTrack;
+        let sameAlbum = false;
+        if (next) {
+          if (current.albumId && next.albumId) {
+            sameAlbum = current.albumId === next.albumId;
+          } else if (current.album && next.album) {
+            sameAlbum = current.album === next.album;
+          }
+        }
+        if (!sameAlbum) {
+          logInternalInfo("PlayerController.sleepTimerMode reached", { mode: "album" });
+          this.sleepTimerMode = null;
+          this.setState({ status: "paused" });
+          return;
+        }
+      }
 
       if (this.playbackOrderMode === "repeat-one" && this.state.currentTrack) {
         await this.playTrackById(this.state.currentTrack.id);
