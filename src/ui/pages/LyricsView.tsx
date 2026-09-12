@@ -158,6 +158,7 @@ export function LyricsView({ onClose }: LyricsViewProps) {
   const [isOnline, setIsOnline] = useState(() => navigator.onLine);
 
   const scrollerRef = useRef<HTMLDivElement>(null);
+  const indicatorRef = useRef<HTMLSpanElement>(null);
   const lineRefs = useRef<Array<HTMLElement | null>>([]);
   /** Refs to each active-eligible word span, indexed [lineIndex][wordIndex]. */
   const wordRefs = useRef<Array<Array<HTMLElement | null>>>([]);
@@ -300,6 +301,33 @@ export function LyricsView({ onClose }: LyricsViewProps) {
     return () => observer.disconnect();
   }, [scrollToLine]);
 
+  // Floating indicator logic
+  useEffect(() => {
+    const indicator = indicatorRef.current;
+    const activeLine = activeIndex >= 0 ? lineRefs.current[activeIndex] : null;
+    if (!indicator) return;
+
+    if (activeLine && !reduce) {
+      indicator.style.opacity = "1";
+      const fontSize = window.getComputedStyle(activeLine).fontSize;
+      indicator.style.height = `calc(${fontSize} * 0.72)`;
+      // Check direction for RTL support
+      const isRtl = activeLine.getAttribute("dir") === "rtl";
+
+      if (isRtl) {
+        indicator.style.right = "0";
+        indicator.style.left = "auto";
+      } else {
+        indicator.style.left = "0";
+        indicator.style.right = "auto";
+      }
+
+      indicator.style.transform = `translateY(calc(${activeLine.offsetTop}px + ${fontSize} * 0.28))`;
+    } else {
+      indicator.style.opacity = "0";
+    }
+  }, [activeIndex, reduce, fontScale]);
+
   useEffect(() => {
     if (!isSynced) {
       setActiveIndex(-1);
@@ -337,16 +365,12 @@ export function LyricsView({ onClose }: LyricsViewProps) {
            * colour — dim ahead of time, fully lit once done — instead of carrying its own
            * copy of the ramp.
            */
-          let sweepPercent: number;
-          if (time <= wordStart) {
-            sweepPercent = -20;
-          } else if (time >= wordEnd) {
-            sweepPercent = 120;
-          } else {
-            const span = wordEnd - wordStart;
-            sweepPercent = span > 0 ? ((time - wordStart) / span) * 100 : 0;
-          }
-          words[w]?.style.setProperty("--sweep", `${sweepPercent.toFixed(1)}%`);
+          const rawDuration = Math.max(0.001, wordEnd - wordStart);
+          const visualDuration = Math.max(rawDuration, 0.18);
+          const adjustedStart = Math.max(0, wordStart - 0.04);
+          const elapsed = time - adjustedStart;
+          const progress = Math.min(100, Math.max(0, (elapsed / visualDuration) * 100));
+          words[w]?.style.setProperty("--progress", `${progress}`);
         }
       }
     };
@@ -634,7 +658,7 @@ export function LyricsView({ onClose }: LyricsViewProps) {
           <div
             ref={scrollerRef}
             /* `relative` makes this the offsetParent the scroll maths measures against. */
-            className="relative h-full overflow-y-auto overscroll-contain px-6 [scrollbar-width:none] @4xl/lyrics:pr-10 [&::-webkit-scrollbar]:hidden"
+            className="relative h-full overflow-y-auto overscroll-contain scroll-smooth px-6 [scrollbar-width:none] @4xl/lyrics:pr-10 [&::-webkit-scrollbar]:hidden"
             onWheel={pauseFollow}
             onPointerDown={pauseFollow}
             onTouchMove={pauseFollow}
@@ -660,7 +684,7 @@ export function LyricsView({ onClose }: LyricsViewProps) {
 
               {!isLoading && hasLines && (
                 <div
-                  className="flex flex-col pl-5"
+                  className="flex flex-col pl-5 relative"
                   style={{
                     /* Multiplied rather than replaced: the clamp still does the adapting, the
                        preference just moves the whole scale up or down with it. */
@@ -669,6 +693,14 @@ export function LyricsView({ onClose }: LyricsViewProps) {
                   }}
                   onKeyDown={isSynced ? handleLineKeyDown : undefined}
                 >
+                  {isSynced && (
+                    <span
+                      ref={indicatorRef}
+                      aria-hidden="true"
+                      className="absolute w-[3px] rounded-full bg-primary transition-all duration-[280ms] ease-[cubic-bezier(0.25,1,0.5,1)] will-change-transform"
+                      style={{ opacity: 0 }}
+                    />
+                  )}
                   {lines.map((line, index) =>
                     isSynced ? (
                       <SyncedLine
@@ -868,15 +900,6 @@ const SyncedLine = memo(function SyncedLine({
       {/* The one piece of brand colour on the screen, and the only thing marking which line
           is playing when the sweep is at either end. */}
       
-      {/* Posistion the highlight indicator on the right for Arabic (RTL), and on the left for (LTR) Languages */}
-      <span
-        aria-hidden="true"
-        className={cn(
-          "absolute top-[0.28em] h-[0.72em] w-[3px] rounded-full bg-primary transition-opacity duration-300",
-          isArabic ? "-right-5" : "-left-5",
-          isActive ? "opacity-100" : "opacity-0 group-hover:opacity-40",
-        )}
-      />
       {tokens.map((token, tokenIndex) => {
         const wordIndex = wordIndexByToken[tokenIndex];
         if (wordIndex === -1) return token;
