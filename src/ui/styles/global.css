@@ -520,36 +520,38 @@ html[data-fx-off~="marquee"] .animate-marquee-vertical {
  * see computeWordFractions in LyricsView.tsx.
  */
 .lyric-sweep {
+  display: inline-block;
   background: linear-gradient(
     90deg,
-    #ffffff 0%,
-    #ffffff calc(var(--sweep, 0%) - 5%),
-    rgba(255, 255, 255, 0.35) calc(var(--sweep, 0%) + 10%),
-    rgba(255, 255, 255, 0.35) 100%
+    var(--color-foreground) 0%,
+    var(--color-foreground) calc(var(--progress, 0) * 1%),
+    color-mix(in oklab, var(--color-foreground) 35%, transparent) calc(var(--progress, 0) * 1% + 12%),
+    color-mix(in oklab, var(--color-foreground) 35%, transparent) 100%
   );
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
   -webkit-text-fill-color: transparent;
-  will-change: background-position;
+  will-change: background;
 }
 
 /* For RTL Arabic language */
 [dir="rtl"] .lyric-sweep,
 .lyric-sweep[dir="rtl"],
 .lyric-sweep:dir(rtl) {
+  display: inline-block;
   background: linear-gradient(
     270deg,
-    #ffffff 0%,
-    #ffffff calc(var(--sweep, 0%) - 5%),
-    rgba(255, 255, 255, 0.35) calc(var(--sweep, 0%) + 10%),
-    rgba(255, 255, 255, 0.35) 100%
+    var(--color-foreground) 0%,
+    var(--color-foreground) calc(var(--progress, 0) * 1%),
+    color-mix(in oklab, var(--color-foreground) 35%, transparent) calc(var(--progress, 0) * 1% + 12%),
+    color-mix(in oklab, var(--color-foreground) 35%, transparent) 100%
   );
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
   -webkit-text-fill-color: transparent;
-  will-change: background-position;
+  will-change: background;
 }
 
 /*
