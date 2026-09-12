@@ -149,7 +149,7 @@ class ActivePlayerController implements PlayerControllerActions {
     tabManager.getActivePlayer().setPlaybackOrderMode(mode);
   setPlaybackRate = (rate: number) => tabManager.getActivePlayer().setPlaybackRate(rate);
   getPlaybackRate = () => tabManager.getActivePlayer().getPlaybackRate();
-  setSleepTimer = (value: number | "track" | "album" | null) =>
+  setSleepTimer = (value: number | "track" | null) =>
     tabManager.getActivePlayer().setSleepTimer(value);
   getSleepTimer = () =>
     tabManager.getActivePlayer().getSleepTimer();

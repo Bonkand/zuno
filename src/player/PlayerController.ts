@@ -194,7 +194,7 @@ export class PlayerController {
    */
   private stopAfterTrack: Track | null = null;
   /** Modes that rely on boundaries rather than times. */
-  private sleepTimerMode: "track" | "album" | null = null;
+  private sleepTimerMode: "track" | null = null;
   /** Wall-clock ms at which the sleep timer fires, or null when it is off. */
   private sleepTimerDeadline: number | null = null;
   private sleepTimerId: number | null = null;
@@ -708,14 +708,14 @@ export class PlayerController {
    * restored afterwards so the next session does not start silent — the usual way a naive
    * sleep timer ruins the following morning.
    */
-  setSleepTimer(value: number | "track" | "album" | null): void {
+  setSleepTimer(value: number | "track" | null): void {
     this.clearSleepTimer();
     if (value === null || (typeof value === "number" && value <= 0)) {
       this.emit();
       return;
     }
 
-    if (value === "track" || value === "album") {
+    if (value === "track") {
       this.sleepTimerMode = value;
       logInternalInfo("PlayerController.setSleepTimer", { mode: value });
       this.emit();
@@ -751,7 +751,7 @@ export class PlayerController {
   }
 
   /** Remaining milliseconds or the active boundary mode, or null when no timer is running. */
-  getSleepTimer(): number | "track" | "album" | null {
+  getSleepTimer(): number | "track" | null {
     if (this.sleepTimerMode !== null) return this.sleepTimerMode;
     if (this.sleepTimerDeadline === null) return null;
     return Math.max(0, this.sleepTimerDeadline - Date.now());
@@ -984,24 +984,17 @@ export class PlayerController {
       if (this.sleepTimerMode === "track") {
         logInternalInfo("PlayerController.sleepTimerMode reached", { mode: "track" });
         this.sleepTimerMode = null;
-        this.setState({ status: "paused" });
-        return;
-      }
 
-      if (this.sleepTimerMode === "album" && this.state.currentTrack) {
-        const next = this.queue.all[this.queue.currentIndex + 1] ?? null;
-        const current = this.state.currentTrack;
-        let sameAlbum = false;
-        if (next) {
-          if (current.albumId && next.albumId) {
-            sameAlbum = current.albumId === next.albumId;
-          } else if (current.album && next.album) {
-            sameAlbum = current.album === next.album;
-          }
-        }
-        if (!sameAlbum) {
-          logInternalInfo("PlayerController.sleepTimerMode reached", { mode: "album" });
-          this.sleepTimerMode = null;
+        const nextTrack = this.queue.next(false);
+        if (nextTrack && nextTrack.id !== this.state.currentTrack?.id) {
+          this.refillAutomaticQueue();
+          await this.playTrackById(nextTrack.id);
+          // the track started loading/playing, wait a tiny bit then pause at 0
+          this.audioEngine.pause();
+          this.setState({ status: "paused" });
+          await this.seekTo(0);
+          return;
+        } else {
           this.setState({ status: "paused" });
           return;
         }

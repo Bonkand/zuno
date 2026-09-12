@@ -27,7 +27,7 @@ const formatCountdown = (remainingMs: number) => formatMinutesSeconds(Math.ceil(
 export function PlaybackOptions() {
   const [isOpen, setIsOpen] = useState(false);
   const [rate, setRate] = useState(() => playerController.getPlaybackRate());
-  const [sleepTimer, setSleepTimer] = useState<number | "track" | "album" | null>(
+  const [sleepTimer, setSleepTimer] = useState<number | "track" | null>(
     () => playerController.getSleepTimer(),
   );
 
@@ -58,7 +58,7 @@ export function PlaybackOptions() {
     setRate(playerController.getPlaybackRate());
   };
 
-  const applySleep = (value: number | "track" | "album" | null) => {
+  const applySleep = (value: number | "track" | null) => {
     playerController.setSleepTimer(value);
     setSleepTimer(playerController.getSleepTimer());
   };
@@ -88,10 +88,8 @@ export function PlaybackOptions() {
               <>
                 <ClockIcon size={17} aria-hidden="true" />
                 <span className="text-[11px] tabular-nums">
-                  {sleepTimer === "track" || sleepTimer === "album"
-                    ? sleepTimer === "track"
-                      ? "Track"
-                      : "Album"
+                  {sleepTimer === "track"
+                    ? "Track"
                     : formatCountdown(sleepTimer as number)}
                 </span>
               </>
@@ -136,9 +134,7 @@ export function PlaybackOptions() {
               <span className="text-xs tabular-nums text-primary">
                 {sleepTimer === "track"
                   ? "Track end"
-                  : sleepTimer === "album"
-                    ? "Album end"
-                    : `${formatCountdown(sleepTimer as number)} left`}
+                  : `${formatCountdown(sleepTimer as number)} left`}
               </span>
             )}
           </div>
@@ -159,13 +155,6 @@ export function PlaybackOptions() {
               className="rounded-full bg-card px-2.5 py-1 text-[11px] font-medium text-foreground transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               Track
-            </button>
-            <button
-              type="button"
-              onClick={() => applySleep("album")}
-              className="rounded-full bg-card px-2.5 py-1 text-[11px] font-medium text-foreground transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            >
-              Album
             </button>
             {isSleeping && (
               <button
