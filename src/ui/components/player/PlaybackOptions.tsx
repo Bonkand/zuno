@@ -27,11 +27,11 @@ const formatCountdown = (remainingMs: number) => formatMinutesSeconds(Math.ceil(
 export function PlaybackOptions() {
   const [isOpen, setIsOpen] = useState(false);
   const [rate, setRate] = useState(() => playerController.getPlaybackRate());
-  const [remainingMs, setRemainingMs] = useState<number | null>(
-    () => playerController.getSleepTimerRemainingMs(),
+  const [sleepTimer, setSleepTimer] = useState<number | "track" | null>(
+    () => playerController.getSleepTimer(),
   );
 
-  const isSleeping = remainingMs !== null;
+  const isSleeping = sleepTimer !== null;
   const equalizer = useEqualizer();
   const equalizerEnabled = useEqualizerEnabled();
   const equalizerActive = equalizerEnabled && !isEqualizerFlat(equalizer);
@@ -43,24 +43,24 @@ export function PlaybackOptions() {
    * Only while a timer is set. This component lives in the player bar, so it is mounted for
    * the entire session — the comment here used to claim the interval was conditional while the
    * effect ran on `[]`, ticking once a second, forever, for a countdown almost nobody has
-   * started. `applySleep` seeds `remainingMs` itself, which is what starts this.
+   * started. `applySleep` seeds `sleepTimer` itself, which is what starts this.
    */
   useEffect(() => {
-    if (!isSleeping) return;
-    const tick = () => setRemainingMs(playerController.getSleepTimerRemainingMs());
+    if (typeof sleepTimer !== "number") return;
+    const tick = () => setSleepTimer(playerController.getSleepTimer());
     tick();
     const id = window.setInterval(tick, 1000);
     return () => window.clearInterval(id);
-  }, [isSleeping]);
+  }, [typeof sleepTimer === "number"]);
 
   const applyRate = (next: number) => {
     playerController.setPlaybackRate(next);
     setRate(playerController.getPlaybackRate());
   };
 
-  const applySleep = (minutes: number | null) => {
-    playerController.setSleepTimer(minutes);
-    setRemainingMs(playerController.getSleepTimerRemainingMs());
+  const applySleep = (value: number | "track" | null) => {
+    playerController.setSleepTimer(value);
+    setSleepTimer(playerController.getSleepTimer());
   };
 
   return (
@@ -87,7 +87,11 @@ export function PlaybackOptions() {
             {isSleeping ? (
               <>
                 <ClockIcon size={17} aria-hidden="true" />
-                <span className="text-[11px] tabular-nums">{formatCountdown(remainingMs)}</span>
+                <span className="text-[11px] tabular-nums">
+                  {sleepTimer === "track"
+                    ? "Track"
+                    : formatCountdown(sleepTimer as number)}
+                </span>
               </>
             ) : rate !== 1 ? (
               <span className="text-[11px] font-semibold tabular-nums">{rate}&times;</span>
@@ -128,7 +132,9 @@ export function PlaybackOptions() {
             <span className="text-xs font-medium text-foreground">Sleep timer</span>
             {isSleeping && (
               <span className="text-xs tabular-nums text-primary">
-                {formatCountdown(remainingMs)} left
+                {sleepTimer === "track"
+                  ? "Track end"
+                  : `${formatCountdown(sleepTimer as number)} left`}
               </span>
             )}
           </div>
@@ -143,6 +149,13 @@ export function PlaybackOptions() {
                 {minutes} min
               </button>
             ))}
+            <button
+              type="button"
+              onClick={() => applySleep("track")}
+              className="rounded-full bg-card px-2.5 py-1 text-[11px] font-medium text-foreground transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              Track
+            </button>
             {isSleeping && (
               <button
                 type="button"

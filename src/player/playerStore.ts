@@ -76,7 +76,7 @@ type PlayerControllerMethod =
   | "setPlaybackRate"
   | "getPlaybackRate"
   | "setSleepTimer"
-  | "getSleepTimerRemainingMs"
+  | "getSleepTimer"
   | "getLyrics"
   | "getPlayerSession"
   | "removeFromQueueAt"
@@ -149,10 +149,10 @@ class ActivePlayerController implements PlayerControllerActions {
     tabManager.getActivePlayer().setPlaybackOrderMode(mode);
   setPlaybackRate = (rate: number) => tabManager.getActivePlayer().setPlaybackRate(rate);
   getPlaybackRate = () => tabManager.getActivePlayer().getPlaybackRate();
-  setSleepTimer = (minutes: number | null) =>
-    tabManager.getActivePlayer().setSleepTimer(minutes);
-  getSleepTimerRemainingMs = () =>
-    tabManager.getActivePlayer().getSleepTimerRemainingMs();
+  setSleepTimer = (value: number | "track" | null) =>
+    tabManager.getActivePlayer().setSleepTimer(value);
+  getSleepTimer = () =>
+    tabManager.getActivePlayer().getSleepTimer();
   getLyrics = (track: Parameters<PlayerController["getLyrics"]>[0]) =>
     tabManager.getActivePlayer().getLyrics(track);
   getPlayerSession = () => tabManager.getActivePlayer().exportSession();
