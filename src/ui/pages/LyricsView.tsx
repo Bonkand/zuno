@@ -327,7 +327,8 @@ export function LyricsView({ onClose }: LyricsViewProps) {
       const timings = wordTimingsRef.current[next];
       if (words && timings) {
         for (let w = 0; w < words.length; w += 1) {
-          const [wordStart, wordEnd] = timings[w] ?? [0, 0];
+          const [wordStart, wordEndRaw] = timings[w] ?? [0, 0];
+          const nextWordStart = timings[w + 1]?.[0];
           /*
            * The gradient's two stops sit a fixed -4%/+7% around --sweep, a soft ramp meant
            * for one sweep on a whole line. Clamping a not-yet-reached word's value to a flat
@@ -338,7 +339,19 @@ export function LyricsView({ onClose }: LyricsViewProps) {
            * copy of the ramp.
            */
           const MIN_VISUAL_SPAN_SEC = 0.15;
-          const effectiveWordEnd = Math.max(wordEnd, wordStart + MIN_VISUAL_SPAN_SEC);
+          const floorEnd = wordStart + MIN_VISUAL_SPAN_SEC;
+          /*
+           * The floor may not push the word's "done" boundary past where the next word
+           * actually starts — otherwise the two read as lit/transitioning at once for a
+           * moment (the flicker this fix exists to remove). When the real gap between two
+           * words is itself under the floor, there is no free time to borrow and the word
+           * stays as fast as the real timestamps make it; that is the honest limit of this
+           * approach for a genuinely back-to-back run of syllables.
+           */
+          const effectiveWordEnd = nextWordStart !== undefined
+            ? Math.min(Math.max(wordEndRaw, floorEnd), nextWordStart)
+            : Math.max(wordEndRaw, floorEnd);
+
           let sweepPercent: number;
           if (time <= wordStart) {
             sweepPercent = -20;
