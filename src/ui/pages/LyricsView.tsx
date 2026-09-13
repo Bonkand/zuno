@@ -337,26 +337,16 @@ export function LyricsView({ onClose }: LyricsViewProps) {
            * colour — dim ahead of time, fully lit once done — instead of carrying its own
            * copy of the ramp.
            */
+          const MIN_VISUAL_SPAN_SEC = 0.15;
+          const effectiveWordEnd = Math.max(wordEnd, wordStart + MIN_VISUAL_SPAN_SEC);
           let sweepPercent: number;
           if (time <= wordStart) {
             sweepPercent = -20;
-          } else if (time >= wordEnd) {
+          } else if (time >= effectiveWordEnd) {
             sweepPercent = 120;
           } else {
-            /*
-             * Real Rich Sync timestamps can give a word a genuinely tiny window — under
-             * 150ms is common for a run of fast syllables at the end of a line. Filling
-             * 0-100% linearly over that little real time reads as an instant flash rather
-             * than a sweep, even though the timing itself is accurate. Flooring the ramp's
-             * own duration (not the word's real end time) keeps the word lighting up fully
-             * lit at the correct real moment, while the visible fill takes long enough to
-             * actually read as motion.
-             */
-            const MIN_VISUAL_SPAN_SEC = 0.15;
-            const realSpan = wordEnd - wordStart;
-            const rampSpan = Math.max(realSpan, MIN_VISUAL_SPAN_SEC);
-            const elapsed = time - wordStart;
-            sweepPercent = Math.min(100, (elapsed / rampSpan) * 100);
+            const rampSpan = effectiveWordEnd - wordStart;
+            sweepPercent = Math.min(100, ((time - wordStart) / rampSpan) * 100);
           }
           words[w]?.style.setProperty("--sweep", `${sweepPercent.toFixed(1)}%`);
         }
