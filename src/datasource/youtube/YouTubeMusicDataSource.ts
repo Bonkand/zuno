@@ -4989,25 +4989,29 @@ export class YouTubeMusicDataSource extends DataSource {
   }
 
   private async getMusixmatchToken(): Promise<string | null> {
-    if (!this.musixmatchTokenPromise) {
-      this.musixmatchTokenPromise = (async () => {
-        try {
-          const response = await tauriFetch(
-            `${MUSIXMATCH_MOBILE_BASE_URL}/token.get?app_id=${MUSIXMATCH_MOBILE_APP_ID}`,
-            { headers: this.getMusixmatchMobileHeaders(), timeoutMs: 4_000 },
-          );
-          if (!response.ok) return null;
-          const body = await response.json() as MusixmatchTokenResponse;
-          const token = body.message?.body?.user_token;
-          return token && token !== "UpgradeOnlyUpgradeUp" ? token : null;
-        } catch (error) {
-          logInternalWarn("YouTubeMusicDataSource.getMusixmatchToken failed", {
-            error: error instanceof Error ? error.message : String(error),
-          });
-          return null;
-        }
-      })();
+    if (this.musixmatchTokenPromise) {
+      const cached = await this.musixmatchTokenPromise;
+      if (cached) return cached;
+      // A cached failure is not retried from a stale promise — fall through to mint again.
     }
+
+    this.musixmatchTokenPromise = (async () => {
+      try {
+        const response = await tauriFetch(
+          `${MUSIXMATCH_MOBILE_BASE_URL}/token.get?app_id=${MUSIXMATCH_MOBILE_APP_ID}`,
+          { headers: this.getMusixmatchMobileHeaders(), timeoutMs: 4_000 },
+        );
+        if (!response.ok) return null;
+        const body = await response.json() as MusixmatchTokenResponse;
+        const token = body.message?.body?.user_token;
+        return token && token !== "UpgradeOnlyUpgradeUp" ? token : null;
+      } catch (error) {
+        logInternalWarn("YouTubeMusicDataSource.getMusixmatchToken failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return null;
+      }
+    })();
     return this.musixmatchTokenPromise;
   }
 
