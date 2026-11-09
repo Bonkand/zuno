@@ -1669,10 +1669,12 @@ export default function App() {
         return;
       }
 
+      // Mute and skip work mid-load, like the player-bar buttons and media keys: the controller
+      // cancels a pending load on skip, and blocking the keys made a keyboard skip through a
+      // queue on a slow connection silently drop every press after the first.
       if (
         eventMatchesShortcut(event, keyboardShortcuts.mute)
         && playerState.currentTrack
-        && playerState.status !== "loading"
       ) {
         event.preventDefault();
         void playerController.toggleMute();
@@ -1682,7 +1684,6 @@ export default function App() {
       if (
         eventMatchesShortcut(event, keyboardShortcuts.previousTrack)
         && playerState.currentTrack
-        && playerState.status !== "loading"
       ) {
         event.preventDefault();
         void playerController.skipToPrevious();
@@ -1692,7 +1693,6 @@ export default function App() {
       if (
         eventMatchesShortcut(event, keyboardShortcuts.nextTrack)
         && playerState.currentTrack
-        && playerState.status !== "loading"
       ) {
         event.preventDefault();
         void playerController.skipToNext();
@@ -1829,7 +1829,9 @@ useEffect(() => {
       },
     );
 
-    void recoverMissedBackgroundEvent();
+    void recoverMissedBackgroundEvent().catch((error) => {
+      logInternalWarn("miniPlayer.recoverMissedBackgroundEvent failed", { error: String(error) });
+    });
 
     return () => {
       window.removeEventListener("main-window-drag-started", handleMainWindowDragStarted);
@@ -2270,7 +2272,8 @@ useEffect(() => {
       )}
 
       <ReleaseNoteDialog
-        version={releaseNoteVersion}
+        // Never on top of the first-run tour: two modals at once is one too many.
+        version={onboardingComplete === false ? null : releaseNoteVersion}
         onDismiss={() => {
           if (releaseNoteVersion) markReleaseNoteSeen(releaseNoteVersion);
           setReleaseNoteVersion(null);

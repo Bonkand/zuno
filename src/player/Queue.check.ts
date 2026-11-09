@@ -99,4 +99,43 @@ equal(ids(withManual), "a,b,c,m1,d,e", "restoreOriginalOrder rebuilds the full p
 equal(withManual.currentIndex, 2, "restoreOriginalOrder puts the cursor back");
 equal(withManual.queuedManually, 1, "restoreOriginalOrder restores the manual count");
 
+// Turning shuffle off after moving along keeps playing from the *current* track: the cursor
+// used to jump back to wherever the shuffle started, so the next skip replayed songs.
+const moved = new Queue();
+const movedTracks = ["a", "b", "c", "d", "e", "f"].map(track);
+moved.set([...movedTracks], 1);
+moved.shuffleAll(0);
+moved.next();
+moved.next();
+const playing = moved.current!;
+moved.add(track("q1"));
+moved.restoreOriginalOrder(moved.queuedManually);
+equal(moved.current, playing, "restore keeps the playing track under the cursor");
+equal(ids(moved).replace(",q1", ""), "a,b,c,d,e,f", "restore returns to source order");
+equal(moved.all[moved.currentIndex + 1]?.id, "q1", "a track queued after shuffling stays next");
+equal(moved.queuedManually, 1, "restore keeps the manual run");
+equal(moved.canRestoreOriginalOrder, false, "restore consumes the snapshot");
+
+// Restoring a tail-only shuffle must not put already-played tracks back in front.
+const tail = new Queue();
+tail.set(["a", "b", "c", "d", "e"].map(track), 0);
+tail.shuffleRemaining(0);
+tail.next();
+const playedFirst = tail.current!.id;
+tail.restoreOriginalOrder(0);
+const upcomingIds = tail.all.slice(tail.currentIndex + 1).map((t) => t.id);
+check(!upcomingIds.includes(playedFirst), "played track is not upcoming again after restore");
+equal(upcomingIds.join(","), ["b", "c", "d", "e"].filter((id) => id !== playedFirst).join(","),
+  "remaining tail returns to source order");
+equal(tail.all.length, 5, "tail restore loses nothing");
+
+// Removing the last entry leaves an empty queue rather than a cursor pointing at nothing.
+const single = new Queue();
+single.set([track("only")], 0);
+single.removeAt(0);
+equal(single.currentIndex, -1, "empty queue has no cursor");
+single.add(track("new"));
+equal(single.current?.id, "new", "adding to an emptied queue makes it current");
+equal(single.queuedManually, 0, "the new current track is not counted as manually queued");
+
 console.log("Queue: ok");

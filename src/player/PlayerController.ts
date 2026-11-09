@@ -199,6 +199,8 @@ export class PlayerController {
   private sleepTimerDeadline: number | null = null;
   private sleepTimerId: number | null = null;
   /** Fade the last few seconds, so sleep does not end on an abrupt cut. */
+  /** Volume to put back once a sleep fade has started; null while no fade is in progress. */
+  private sleepFadeRestoreVolume: number | null = null;
   private sleepFadeId: number | null = null;
   /** Coalesces a burst of skip forward/back clicks — see `NavigationCoalescer`. */
   private readonly navigationCoalescer = new NavigationCoalescer();
@@ -724,10 +726,13 @@ export class PlayerController {
 
     const durationMs = value * 60_000;
     this.sleepTimerDeadline = Date.now() + durationMs;
-    const restoreVolume = this.audioEngine.getVolume();
 
     if (durationMs > SLEEP_FADE_MS) {
       this.sleepFadeId = globalThis.setTimeout(() => {
+        // Read when the fade starts, not when the timer was set: a volume change made during
+        // the countdown is the one to come back to.
+        const restoreVolume = this.audioEngine.getVolume();
+        this.sleepFadeRestoreVolume = restoreVolume;
         const startedAt = Date.now();
         const step = () => {
           const progress = Math.min(1, (Date.now() - startedAt) / SLEEP_FADE_MS);
@@ -739,8 +744,9 @@ export class PlayerController {
     }
 
     this.sleepTimerId = globalThis.setTimeout(() => {
-      this.pause();
-      this.audioEngine.setVolume(restoreVolume);
+      this.sleepTimerId = null;
+      void this.pause();
+      // Clearing restores the pre-fade volume, after the pause so it is not heard.
       this.clearSleepTimer();
       logInternalInfo("PlayerController.sleepTimer fired");
       this.emit();
@@ -764,6 +770,14 @@ export class PlayerController {
     this.sleepFadeId = null;
     this.sleepTimerDeadline = null;
     this.sleepTimerMode = null;
+    /*
+     * Cancelling (or replacing) the timer mid-fade used to leave the volume wherever the fade
+     * had got to, so "cancel" turned the music down for good.
+     */
+    if (this.sleepFadeRestoreVolume !== null) {
+      this.audioEngine.setVolume(this.sleepFadeRestoreVolume);
+      this.sleepFadeRestoreVolume = null;
+    }
   }
 
   /** Queues a whole album or playlist behind whatever is already hand-picked. */
@@ -837,13 +851,28 @@ export class PlayerController {
     });
   }
 
+  /**
+   * Moves the queue cursor forward and returns the entry to play, or null at the end.
+   *
+   * A next entry with the same id as what is playing is only skipped when the queue and the
+   * player disagree about what is current (a track started from outside the queue). When they
+   * agree, it is a genuine second entry — "Play next" on the current song, or a playlist that
+   * lists a song twice in a row — and treating it as the end of the queue used to throw the
+   * whole queue away for recommendations.
+   */
+  private advanceQueue(): Track | null {
+    const playingId = this.state.currentTrack?.id;
+    const queueInSync = this.queue.current?.id === playingId;
+    const nextTrack = this.queue.next(false);
+    if (!nextTrack) return null;
+    if (!queueInSync && nextTrack.id === playingId) return null;
+    return nextTrack;
+  }
+
   private async skipToNextNow(): Promise<void> {
     const shouldResume = this.shouldResumeAfterNavigation();
-    const nextTrack = this.queue.next(false);
-    if (
-      (!nextTrack || nextTrack.id === this.state.currentTrack?.id)
-      && this.state.currentTrack
-    ) {
+    const nextTrack = this.advanceQueue();
+    if (!nextTrack && this.state.currentTrack) {
       const queueEndTrack = await this.loadQueueEndRecommendations(this.state.currentTrack);
       if (queueEndTrack) {
         if (shouldResume) {
@@ -854,11 +883,7 @@ export class PlayerController {
       }
       if (queueEndTrack || !this.autoplayEnabled) return;
     }
-    if (
-      (!nextTrack || nextTrack.id === this.state.currentTrack?.id)
-      && this.autoplayEnabled
-      && this.state.currentTrack
-    ) {
+    if (!nextTrack && this.autoplayEnabled && this.state.currentTrack) {
       const radioTrack = await this.loadRadioQueue(this.state.currentTrack);
       if (radioTrack) {
         if (shouldResume) {
@@ -873,7 +898,7 @@ export class PlayerController {
       currentTrackId: this.state.currentTrack?.id ?? null,
       nextTrackId: nextTrack?.id ?? null,
     });
-    if (!nextTrack || nextTrack.id === this.state.currentTrack?.id) return;
+    if (!nextTrack) return;
     this.refillAutomaticQueue();
     if (shouldResume) {
       await this.playTrackById(nextTrack.id);
@@ -985,8 +1010,8 @@ export class PlayerController {
         logInternalInfo("PlayerController.sleepTimerMode reached", { mode: "track" });
         this.sleepTimerMode = null;
 
-        const nextTrack = this.queue.next(false);
-        if (nextTrack && nextTrack.id !== this.state.currentTrack?.id) {
+        const nextTrack = this.advanceQueue();
+        if (nextTrack) {
           this.refillAutomaticQueue();
           await this.playTrackById(nextTrack.id);
           // the track started loading/playing, wait a tiny bit then pause at 0
@@ -1017,9 +1042,9 @@ export class PlayerController {
         return;
       }
 
-      const nextTrack = this.queue.next(false);
+      const nextTrack = this.advanceQueue();
 
-      if (nextTrack && nextTrack.id !== this.state.currentTrack?.id) {
+      if (nextTrack) {
         this.refillAutomaticQueue();
         await this.playTrackById(nextTrack.id);
         return;
@@ -1656,6 +1681,14 @@ export class PlayerController {
 
     if (this.crossfadeSec <= 0 || remaining > this.crossfadeSec) return;
     if (!this.audioEngine.hasPreloaded(next.id)) return;
+    /*
+     * A track that is meant to be the last one plays out in full instead. Crossfading runs the
+     * end-of-track handling early, and when that handling decides to stop it only flips the
+     * status: the outgoing audio kept playing, its real end arrived a few seconds later with
+     * the stop marker already consumed, and playback carried on to the next track — so "stop
+     * after this track" did nothing with crossfade on, and the sleep timer clipped the outro.
+     */
+    if (this.sleepTimerMode === "track" || this.stopAfterTrack === this.queue.current) return;
 
     logInternalInfo("PlayerController.crossfade starting", {
       fromTrackId: this.state.currentTrack?.id ?? null,
