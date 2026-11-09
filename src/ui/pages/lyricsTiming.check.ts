@@ -19,7 +19,7 @@ function equal(actual: unknown, expected: unknown, message: string): void {
   check(actual === expected, `${message}: expected ${String(expected)}, got ${String(actual)}`);
 }
 
-const { findActiveLineIndex, getLineProgress, isSyncedLyrics } = await import("./lyricsTiming");
+const { findActiveLineIndex, getLineProgress, isSyncedLyrics, lineTokens } = await import("./lyricsTiming");
 
 const LINES = [
   { text: "first", startTimeSec: 10 },
@@ -81,5 +81,40 @@ equal(
   "a zero-length line is already finished, not a divide by zero",
 );
 equal(getLineProgress([{ text: "a" }], 0, 5), 0, "an untimed line never sweeps");
+
+/* Tokens: span n must be timing n, however the source split the words. */
+
+const plainTokens = lineTokens({ text: "rock-a bye  baby" });
+equal(
+  plainTokens.map((token) => `${token.wordIndex}:${token.text}`).join("|"),
+  "0:rock-a|-1: |1:bye|-1:  |2:baby",
+  "untimed text splits on whitespace, kept verbatim",
+);
+
+const timedTokens = lineTokens({
+  text: "Rock-a bye enough (Ooh)",
+  words: [
+    { text: "Rock", startTimeSec: 1 },
+    { text: "-", startTimeSec: 1.2 },
+    { text: "a ", startTimeSec: 1.3 },
+    { text: "bye ", startTimeSec: 1.5 },
+    { text: "e", startTimeSec: 2 },
+    { text: "nough", startTimeSec: 2.2 },
+    { text: "(Ooh)", startTimeSec: 1.4, background: true },
+  ],
+});
+equal(
+  timedTokens
+    .filter((token) => !token.background)
+    .map((token) => `${token.wordIndex}:${token.text}`)
+    .join("|"),
+  "0:Rock|1:-|2:a|-1: |3:bye|-1: |4:e|5:nough",
+  "timed words map one-to-one onto their timings, syllables back to back",
+);
+equal(
+  timedTokens.filter((token) => token.background).map((token) => token.wordIndex).join(","),
+  "6",
+  "a backing vocal keeps its own timing index",
+);
 
 console.log("lyricsTiming self-check passed");

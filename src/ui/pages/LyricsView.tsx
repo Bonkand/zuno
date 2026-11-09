@@ -10,7 +10,7 @@ import {
 import { useReduceMotion } from "../settings/renderEffects";
 import { cn } from "@/lib/utils";
 import { CloseIcon, FullScreenIcon, LyricsIcon, QuitFullScreenIcon, RefreshIcon } from "@/ui/icons";
-import type { Lyrics, LyricsSourceAttempt, LyricsSourceStatus } from "../../datasource/types";
+import type { LyricLine, Lyrics, LyricsSourceAttempt, LyricsSourceStatus } from "../../datasource/types";
 import { LYRICS_SOURCES } from "../../datasource/youtube/lyricsSources";
 import { FloatingPanel } from "../components/FloatingPanel";
 import { logInternalWarn } from "../../internal/logging";
@@ -23,7 +23,7 @@ import { OFFSET_STEP_SEC, setLyricsOffset, useLyricsOffset } from "../settings/l
 import { useLyricsFontScale } from "../settings/lyricsFontScale";
 import { TRANSLATION_OFF, useLyricsTranslationLang } from "../settings/lyricsTranslation";
 import { translateLines } from "../../datasource/translate";
-import { findActiveLineIndex, isSyncedLyrics } from "./lyricsTiming";
+import { findActiveLineIndex, isSyncedLyrics, lineTokens, type LineToken } from "./lyricsTiming";
 
 /** How long a manual scroll keeps the auto-follow parked. */
 const AUTO_SCROLL_RESUME_MS = 4500;
@@ -47,14 +47,6 @@ const DEPTH = [
 ];
 
 /**
- * Splits a line into word and whitespace tokens, alternating. Whitespace is kept verbatim
- * (not collapsed) so re-joining the tokens reproduces the original text exactly.
- */
-function splitLineTokens(text: string): string[] {
-  return text.split(/(\s+)/).filter((token) => token.length > 0);
-}
-
-/**
  * Fractional [start, end) of each word token's own slice of the line's sweep progress,
  * weighted by character count.
  *
@@ -67,8 +59,9 @@ function splitLineTokens(text: string): string[] {
  * the progress fixes that without needing per-word timestamps the data doesn't have.
  */
 function computeWordFractions(text: string): [number, number][] {
-  const tokens = splitLineTokens(text);
-  const wordLengths = tokens.filter((token) => token.trim().length > 0).map((token) => token.length);
+  const wordLengths = lineTokens({ text })
+    .filter((token) => token.wordIndex !== -1)
+    .map((token) => token.text.length);
   const total = wordLengths.reduce((sum, len) => sum + len, 0) || 1;
   let cursor = 0;
   return wordLengths.map((len) => {
@@ -348,7 +341,9 @@ export function LyricsView({ onClose }: LyricsViewProps) {
            * stays as fast as the real timestamps make it; that is the honest limit of this
            * approach for a genuinely back-to-back run of syllables.
            */
-          const effectiveWordEnd = nextWordStart !== undefined
+          /* Backing vocals are timed words of their own that overlap the lead line, so the
+             next entry can start *before* this one. That is not a boundary to stop at. */
+          const effectiveWordEnd = nextWordStart !== undefined && nextWordStart > wordStart
             ? Math.min(Math.max(wordEndRaw, floorEnd), nextWordStart)
             : Math.max(wordEndRaw, floorEnd);
 
@@ -399,9 +394,25 @@ export function LyricsView({ onClose }: LyricsViewProps) {
     if (translationLang === TRANSLATION_OFF || !hasLines || !track) return;
 
     let cancelled = false;
-    void translateLines(lines.map((line) => line.text), translationLang, track.id)
+    /* Blank lines are instrumental breaks: nothing to translate, and sending them would
+       knock the line-by-line alignment out by one at every break. */
+    const sungIndices = lines.flatMap((line, index) => (line.text.trim() ? [index] : []));
+    void translateLines(
+      sungIndices.map((index) => lines[index].text),
+      translationLang,
+      `${track.id}:${lyrics?.sourceId ?? ""}`,
+    )
       .then((result) => {
-        if (!cancelled) setTranslations(result);
+        if (cancelled) return;
+        if (!result) {
+          setTranslations(null);
+          return;
+        }
+        const byLine: string[] = lines.map(() => "");
+        sungIndices.forEach((lineIndex, resultIndex) => {
+          byLine[lineIndex] = result[resultIndex] ?? "";
+        });
+        setTranslations(byLine);
       })
       .catch((error) => {
         logInternalWarn("LyricsView translation failed", {
@@ -690,6 +701,7 @@ export function LyricsView({ onClose }: LyricsViewProps) {
                         key={`${index}:${line.text}`}
                         index={index}
                         text={line.text}
+                        words={line.words}
                         /* Clamped to the table length so every line past the ramp shares one
                            prop value — otherwise line 300 of a long song would re-render on
                            every flip just because its distance went from 287 to 286. */
@@ -774,6 +786,8 @@ export function LyricsView({ onClose }: LyricsViewProps) {
 interface SyncedLineProps {
   index: number;
   text: string;
+  /** Real word/syllable timing when the source has it; the spans are built from these. */
+  words?: LyricLine["words"];
   distance: number;
   isActive: boolean;
   isTabbable: boolean;
@@ -802,6 +816,7 @@ interface SyncedLineProps {
 const SyncedLine = memo(function SyncedLine({
   index,
   text,
+  words,
   distance,
   isActive,
   isTabbable,
@@ -821,12 +836,10 @@ const SyncedLine = memo(function SyncedLine({
   // Check if there's letters
   const isArabic = /[\u0600-\u06FF]/.test(text);
 
-  const tokens = useMemo(() => splitLineTokens(text), [text]);
-  /* -1 marks a whitespace token: rendered as a plain string, no span, no ref, no sweep. */
-  const wordIndexByToken = useMemo(() => {
-    let counter = -1;
-    return tokens.map((token) => (token.trim() ? (counter += 1) : -1));
-  }, [tokens]);
+  /* Built from the timed words when there are any, so span n is always timing n. */
+  const tokens = useMemo(() => lineTokens({ text, words }), [text, words]);
+  const leadTokens = useMemo(() => tokens.filter((token) => !token.background), [tokens]);
+  const backingTokens = useMemo(() => tokens.filter((token) => token.background), [tokens]);
 
   // An empty LRC line is a real instrumental beat, not junk. It keeps its slot so the timing
   // stays honest, and announces itself when it comes up.
@@ -851,6 +864,23 @@ const SyncedLine = memo(function SyncedLine({
       </div>
     );
   }
+
+  /* -1 marks a whitespace token: rendered as a plain string, no span, no ref, no sweep. */
+  const renderToken = (token: LineToken, tokenIndex: number) => {
+    if (token.wordIndex === -1) return token.text;
+    return (
+      <span
+        key={tokenIndex}
+        ref={(element) => registerWord(index, token.wordIndex, element)}
+        /* Under reduced motion nothing writes `--sweep` (see the sampling loop), so an
+           applied gradient would stick at its 0% end and render dimmer than its
+           neighbours — same guard the line-level class used to carry. */
+        className={isActive && !reduce ? "lyric-sweep" : undefined}
+      >
+        {token.text}
+      </span>
+    );
+  };
 
   return (
     <button
@@ -892,22 +922,14 @@ const SyncedLine = memo(function SyncedLine({
           isActive ? "opacity-100" : "opacity-0 group-hover:opacity-40",
         )}
       />
-      {tokens.map((token, tokenIndex) => {
-        const wordIndex = wordIndexByToken[tokenIndex];
-        if (wordIndex === -1) return token;
-        return (
-          <span
-            key={tokenIndex}
-            ref={(element) => registerWord(index, wordIndex, element)}
-            /* Under reduced motion nothing writes `--sweep` (see the sampling loop), so an
-               applied gradient would stick at its 0% end and render dimmer than its
-               neighbours — same guard the line-level class used to carry. */
-            className={isActive && !reduce ? "lyric-sweep" : undefined}
-          >
-            {token}
-          </span>
-        );
-      })}
+      {leadTokens.map((token, tokenIndex) => renderToken(token, tokenIndex))}
+      {/* Backing vocals sit under the lead, smaller, the way they read on a lyric sheet —
+          inline they ran into the end of the lead line and made it read as the wrong words. */}
+      {backingTokens.length > 0 && (
+        <span className="mt-1 block text-[0.6em] font-semibold leading-snug opacity-80">
+          {backingTokens.map((token, tokenIndex) => renderToken(token, tokenIndex))}
+        </span>
+      )}
       {/* Sized in `em` so it tracks the line it belongs to, and deliberately quieter: it is
           a gloss on the lyric, not a second lyric competing with it. */}
       {translation && (

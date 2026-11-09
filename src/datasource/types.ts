@@ -38,10 +38,18 @@ export interface LyricLine {
   words?: LyricWord[];
 }
 
+/**
+ * One timed piece of a line: a word, or a syllable of one.
+ *
+ * `text` is verbatim including any whitespace that follows it, so a line's words joined
+ * together read exactly as the line does — syllables of one word carry no space between them.
+ */
 export interface LyricWord {
   text: string;
   startTimeSec: number;
   endTimeSec?: number;
+  /** A backing vocal sung over the lead line, shown beneath it rather than inline. */
+  background?: boolean;
 }
 
 export type LyricsSourceStatus = "hit" | "miss" | "timeout" | "error" | "skipped";

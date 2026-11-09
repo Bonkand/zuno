@@ -41,6 +41,10 @@ const synced = (count: number) => ({
 
 equal(LYRICS_SOURCES.length, 6, "every source is in the table");
 check(
+  rankOfSource("betterlyrics") < rankOfSource("musixmatch-richsync"),
+  "Apple Music syllable sync outranks Musixmatch word sync",
+);
+check(
   rankOfSource("musixmatch-richsync") < rankOfSource("lrclib-exact"),
   "musixmatch-richsync outranks lrclib-exact",
 );
@@ -53,13 +57,22 @@ check(
   "real lyrics outrank machine transcription",
 );
 check(
-  rankOfSource("youtube-transcript") < rankOfSource("youtube-music"),
-  "timed transcription outranks untimed official words, because this screen follows along",
+  rankOfSource("youtube-music") < rankOfSource("youtube-transcript"),
+  "the official words outrank a machine transcription that gets them wrong",
 );
 check(
-  rankOfSource("nonsense") > rankOfSource("youtube-music"),
+  rankOfSource("nonsense") > rankOfSource("youtube-transcript"),
   "an unknown source sorts to the end, never to the front",
 );
+
+const wordSynced = (count: number) => ({
+  lines: Array.from({ length: count }, (_, i) => ({
+    text: `line ${i}`,
+    startTimeSec: i,
+    words: [{ text: `line ${i}`, startTimeSec: i }],
+  })),
+  timing: "synced" as const,
+});
 
 // The whole point: passed in fastest-first, the table still picks the better source.
 const raced = [
@@ -67,7 +80,43 @@ const raced = [
   { source: byId("betterlyrics"), lyrics: synced(30) },
   { source: byId("lrclib-exact"), lyrics: synced(25) },
 ];
-equal(pickBestLyrics(raced)?.source.id, "lrclib-exact", "rank wins over arrival order");
+equal(pickBestLyrics(raced)?.source.id, "betterlyrics", "rank wins over arrival order");
+equal(
+  pickBestLyrics([
+    { source: byId("lrclib-search"), lyrics: synced(20) },
+    { source: byId("lrclib-exact"), lyrics: synced(25) },
+  ])?.source.id,
+  "lrclib-exact",
+  "between equals, the table decides",
+);
+
+equal(
+  pickBestLyrics([
+    { source: byId("betterlyrics"), lyrics: synced(30) },
+    { source: byId("musixmatch-richsync"), lyrics: wordSynced(30) },
+  ])?.source.id,
+  "musixmatch-richsync",
+  "word timing beats line timing, even from lower in the table",
+);
+equal(
+  pickBestLyrics([
+    { source: byId("betterlyrics"), lyrics: wordSynced(30) },
+    { source: byId("musixmatch-richsync"), lyrics: wordSynced(30) },
+  ])?.source.id,
+  "betterlyrics",
+  "and between two word-synced sheets, Apple's wins",
+);
+equal(
+  pickBestLyrics(
+    [
+      { source: byId("musixmatch-richsync"), lyrics: wordSynced(30) },
+      { source: byId("lrclib-exact"), lyrics: synced(30) },
+    ],
+    "lrclib-exact",
+  )?.source.id,
+  "lrclib-exact",
+  "an explicit preference still beats word timing",
+);
 
 equal(
   pickBestLyrics([
@@ -102,7 +151,7 @@ const shuffled = sortAttempts([
   skippedAttempt(byId("lrclib-exact")),
   skippedAttempt(byId("betterlyrics")),
 ]);
-equal(shuffled[0].id, "lrclib-exact", "attempts are listed in priority order, whatever order they finished in");
+equal(shuffled[0].id, "betterlyrics", "attempts are listed in priority order, whatever order they finished in");
 equal(shuffled[2].id, "youtube-music", "down to the last resort");
 
 /* Preferred source: promoted, but never the only one that runs. */
