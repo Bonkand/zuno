@@ -199,6 +199,8 @@ export class PlayerController {
   private sleepTimerDeadline: number | null = null;
   private sleepTimerId: number | null = null;
   /** Fade the last few seconds, so sleep does not end on an abrupt cut. */
+  /** Volume to put back once a sleep fade has started; null while no fade is in progress. */
+  private sleepFadeRestoreVolume: number | null = null;
   private sleepFadeId: number | null = null;
   /** Coalesces a burst of skip forward/back clicks — see `NavigationCoalescer`. */
   private readonly navigationCoalescer = new NavigationCoalescer();
@@ -724,10 +726,13 @@ export class PlayerController {
 
     const durationMs = value * 60_000;
     this.sleepTimerDeadline = Date.now() + durationMs;
-    const restoreVolume = this.audioEngine.getVolume();
 
     if (durationMs > SLEEP_FADE_MS) {
       this.sleepFadeId = globalThis.setTimeout(() => {
+        // Read when the fade starts, not when the timer was set: a volume change made during
+        // the countdown is the one to come back to.
+        const restoreVolume = this.audioEngine.getVolume();
+        this.sleepFadeRestoreVolume = restoreVolume;
         const startedAt = Date.now();
         const step = () => {
           const progress = Math.min(1, (Date.now() - startedAt) / SLEEP_FADE_MS);
@@ -739,8 +744,9 @@ export class PlayerController {
     }
 
     this.sleepTimerId = globalThis.setTimeout(() => {
-      this.pause();
-      this.audioEngine.setVolume(restoreVolume);
+      this.sleepTimerId = null;
+      void this.pause();
+      // Clearing restores the pre-fade volume, after the pause so it is not heard.
       this.clearSleepTimer();
       logInternalInfo("PlayerController.sleepTimer fired");
       this.emit();
@@ -764,6 +770,14 @@ export class PlayerController {
     this.sleepFadeId = null;
     this.sleepTimerDeadline = null;
     this.sleepTimerMode = null;
+    /*
+     * Cancelling (or replacing) the timer mid-fade used to leave the volume wherever the fade
+     * had got to, so "cancel" turned the music down for good.
+     */
+    if (this.sleepFadeRestoreVolume !== null) {
+      this.audioEngine.setVolume(this.sleepFadeRestoreVolume);
+      this.sleepFadeRestoreVolume = null;
+    }
   }
 
   /** Queues a whole album or playlist behind whatever is already hand-picked. */

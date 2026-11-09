@@ -1669,10 +1669,12 @@ export default function App() {
         return;
       }
 
+      // Mute and skip work mid-load, like the player-bar buttons and media keys: the controller
+      // cancels a pending load on skip, and blocking the keys made a keyboard skip through a
+      // queue on a slow connection silently drop every press after the first.
       if (
         eventMatchesShortcut(event, keyboardShortcuts.mute)
         && playerState.currentTrack
-        && playerState.status !== "loading"
       ) {
         event.preventDefault();
         void playerController.toggleMute();
@@ -1682,7 +1684,6 @@ export default function App() {
       if (
         eventMatchesShortcut(event, keyboardShortcuts.previousTrack)
         && playerState.currentTrack
-        && playerState.status !== "loading"
       ) {
         event.preventDefault();
         void playerController.skipToPrevious();
@@ -1692,7 +1693,6 @@ export default function App() {
       if (
         eventMatchesShortcut(event, keyboardShortcuts.nextTrack)
         && playerState.currentTrack
-        && playerState.status !== "loading"
       ) {
         event.preventDefault();
         void playerController.skipToNext();

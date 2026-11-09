@@ -217,6 +217,9 @@ function loadYouTubeIframeApi(): Promise<void> {
   return iframeApiPromise;
 }
 
+/** How far getCurrentTime may run ahead of the last real position update. */
+const MAX_TIME_EXTRAPOLATION_SEC = 0.5;
+
 export class AudioEngine {
   /*
    * A getter, not a field captured in the constructor: engines are built once per tab and live
@@ -756,8 +759,17 @@ export class AudioEngine {
     if (this.lastRawTimeAt === 0) {
       return raw;
     }
-    const elapsedSec = (now - this.lastRawTimeAt) / 1000;
-    return this.lastRawTime + elapsedSec * this.playbackRate;
+    /*
+     * Bounded, because a raw value that stops changing is not always a slow bridge: a stall
+     * while buffering, or the last position of a track that has finished, stays put too.
+     * Extrapolating without a limit ran the playhead (and the synced lyrics) ahead of the
+     * audio for as long as the stall lasted, and past the end of the track. Real updates
+     * arrive every 200-300 ms on every backend, so half a second covers a late one.
+     */
+    const elapsedSec = Math.min((now - this.lastRawTimeAt) / 1000, MAX_TIME_EXTRAPOLATION_SEC);
+    const estimate = this.lastRawTime + elapsedSec * this.playbackRate;
+    const duration = this.getDuration();
+    return duration > 0 ? Math.min(estimate, duration) : estimate;
   }
 
   getDuration(): number {
