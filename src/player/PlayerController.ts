@@ -1681,6 +1681,14 @@ export class PlayerController {
 
     if (this.crossfadeSec <= 0 || remaining > this.crossfadeSec) return;
     if (!this.audioEngine.hasPreloaded(next.id)) return;
+    /*
+     * A track that is meant to be the last one plays out in full instead. Crossfading runs the
+     * end-of-track handling early, and when that handling decides to stop it only flips the
+     * status: the outgoing audio kept playing, its real end arrived a few seconds later with
+     * the stop marker already consumed, and playback carried on to the next track — so "stop
+     * after this track" did nothing with crossfade on, and the sleep timer clipped the outro.
+     */
+    if (this.sleepTimerMode === "track" || this.stopAfterTrack === this.queue.current) return;
 
     logInternalInfo("PlayerController.crossfade starting", {
       fromTrackId: this.state.currentTrack?.id ?? null,

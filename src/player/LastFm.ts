@@ -41,7 +41,13 @@ interface TrackedTrackState {
   lastObservedAtMs: number | null;
   nowPlayingSent: boolean;
   scrobbled: boolean;
+  /** Last playhead seen, to tell a restart of the same track (repeat-one) from playing on. */
+  lastPositionSec: number;
 }
+
+/** A jump back to within this of the start, from at least this far in, is a new play. */
+const RESTART_POSITION_SEC = 5;
+const RESTART_MIN_PROGRESS_SEC = 30;
 
 const MIN_SCROBBLE_DURATION_SEC = 31;
 const MAX_THRESHOLD_SEC = 240;
@@ -129,7 +135,16 @@ export class LastFmService {
 
     const key = trackKey(update.track, payload);
     const nowMs = Date.now();
-    if (!this.tracked || this.tracked.key !== key) {
+    const position = Math.max(0, update.currentTime);
+    /*
+     * The same track starting over — repeat-one, or the same song queued twice in a row — is a
+     * new listen. Keyed on the track alone, the first loop was scrobbled and every later one was
+     * silently dropped because `scrobbled` was already set.
+     */
+    const restarted = this.tracked?.key === key
+      && position < RESTART_POSITION_SEC
+      && this.tracked.lastPositionSec >= RESTART_MIN_PROGRESS_SEC;
+    if (!this.tracked || this.tracked.key !== key || restarted) {
       this.tracked = {
         key,
         payload,
@@ -138,8 +153,14 @@ export class LastFmService {
         lastObservedAtMs: update.status === "playing" ? nowMs : null,
         nowPlayingSent: false,
         scrobbled: false,
+        lastPositionSec: position,
       };
+    } else if (this.tracked.payload.duration === undefined && payload.duration !== undefined) {
+      // A duration that only arrives once the stream loads would otherwise leave the track
+      // without a threshold, and so never scrobbled.
+      this.tracked.payload = { ...this.tracked.payload, duration: payload.duration };
     }
+    this.tracked.lastPositionSec = position;
 
     if (update.status !== "playing") {
       this.tracked.lastObservedAtMs = null;
