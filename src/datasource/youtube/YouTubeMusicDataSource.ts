@@ -33,7 +33,6 @@ import type {
   FeedNotification,
   LibrarySnapshot,
   Lyrics,
-  LyricWord,
   LyricsSourceAttempt,
   Playlist,
   ResolvedLink,
@@ -55,6 +54,7 @@ import {
   unmetPrecondition,
 } from "./lyricsSources";
 import { getPreferredLyricsSourceId } from "../../internal/lyricsSourcePreference";
+import { parseLrc, parseMusixmatchRichsync, parseTtml } from "./lyricsParsers";
 import { isVideoId, looksLikeYouTubeLink, parseYouTubeLink } from "./links";
 import { isTrackDownloaded } from "../../player/offlineStore";
 import {
@@ -236,13 +236,13 @@ type MusixmatchRichsyncResponse = {
 
 const MUSIXMATCH_MOBILE_BASE_URL = "https://apic-appmobile.musixmatch.com/ws/1.1";
 const MUSIXMATCH_MOBILE_APP_ID = "mac-ios-v2.0";
+/**
+ * How far a BetterLyrics sheet's own length may sit from the track's. Apple's masters
+ * routinely run a second or two longer than the same song elsewhere (trailing silence), so
+ * this is looser than the two seconds LRCLIB gets, but tight enough to refuse a live cut.
+ */
+const BETTERLYRICS_MAX_DURATION_DELTA_SEC = 6;
 
-type MusixmatchRichsyncLine = {
-  ts: number;
-  te: number;
-  l: Array<{ c: string; o: number }>;
-  x: string;
-};
 /* Rank used to live on the result as a `priority` number that nothing ever read — the winner
    was really decided by the order of an array literal. It is now the LYRICS_SOURCES table. */
 type LyricsProviderResult = Lyrics;
@@ -4666,7 +4666,7 @@ export class YouTubeMusicDataSource extends DataSource {
      * The preferred source is part of the key because it changes which source wins. Sharing
      * one key would mean changing the setting appears to do nothing until the cache expires.
      */
-    const cacheKey = `lyrics:synced:v3:${getPreferredLyricsSourceId()}:${track.id}`;
+    const cacheKey = `lyrics:synced:v4:${getPreferredLyricsSourceId()}:${track.id}`;
     const cached = await getCachedJson<Lyrics>(cacheKey);
     if (cached?.timing === "synced" && cached.lines.length > 0) return cached;
 
@@ -4953,12 +4953,29 @@ export class YouTubeMusicDataSource extends DataSource {
         const body = await response.json() as BetterLyricsResponse;
         if (!body.ttml) continue;
 
-        const lines = this.parseTtmlLyrics(body.ttml);
+        const parsed = parseTtml(body.ttml);
+        const lines = parsed.lines;
         if (lines.length === 0) continue;
+        /* A search, not an exact lookup: it will hand back a different recording (a live cut,
+           a radio edit) when that is the closest it has. The sheet says how long the audio it
+           was timed against runs, so a sheet for some other version is refused here instead
+           of drifting further off the vocals with every line. */
+        const sheetDelta = parsed.durationSec !== undefined
+          ? this.getLyricsDurationDelta(track, parsed.durationSec)
+          : Number.POSITIVE_INFINITY;
+        if (Number.isFinite(sheetDelta) && sheetDelta > BETTERLYRICS_MAX_DURATION_DELTA_SEC) {
+          logInternalDebug("YouTubeMusicDataSource.getLyrics BetterLyrics duration mismatch", {
+            trackId: track.id,
+            sheetDurationSec: parsed.durationSec,
+            trackDurationSec: track.durationSec,
+          });
+          continue;
+        }
 
         logInternalInfo("YouTubeMusicDataSource.getLyrics BetterLyrics success", {
           trackId: track.id,
           lineCount: lines.length,
+          timing: parsed.timing,
         });
         return {
           lines,
@@ -5102,7 +5119,7 @@ export class YouTubeMusicDataSource extends DataSource {
             continue;
           }
 
-          const lines = this.parseMusixmatchRichsync(rawBody);
+          const lines = parseMusixmatchRichsync(rawBody);
           if (lines.length === 0) continue;
 
           logInternalInfo("YouTubeMusicDataSource.getLyrics Musixmatch success", {
@@ -5128,37 +5145,6 @@ export class YouTubeMusicDataSource extends DataSource {
     return null;
   }
 
-  private parseMusixmatchRichsync(rawBody: string): Lyrics["lines"] {
-    let raw: MusixmatchRichsyncLine[];
-    try {
-      raw = JSON.parse(rawBody) as MusixmatchRichsyncLine[];
-    } catch {
-      return [];
-    }
-    if (!Array.isArray(raw)) return [];
-
-    return raw
-      .map((line) => {
-        const text = (line.x ?? line.l?.map((word) => word.c).join("") ?? "").trim();
-        if (!text || typeof line.ts !== "number") return null;
-
-        const words: LyricWord[] = (line.l ?? [])
-          .filter((word) => word.c.trim().length > 0)
-          .map((word, index, all) => ({
-            text: word.c,
-            startTimeSec: line.ts + word.o,
-            endTimeSec: index + 1 < all.length ? line.ts + all[index + 1].o : line.te,
-          }));
-
-        return {
-          text,
-          startTimeSec: line.ts,
-          endTimeSec: line.te,
-          words: words.length > 0 ? words : undefined,
-        };
-      })
-      .filter((line): line is NonNullable<typeof line> => line !== null);
-  }
   private toLrcLibLyrics(
     track: Track,
     match: LrcLibTrack,
@@ -5168,7 +5154,7 @@ export class YouTubeMusicDataSource extends DataSource {
     const durationDelta = this.getLyricsDurationDelta(track, match.duration);
     if (durationDelta > 2) return null;
 
-    const lines = this.parseSyncedLyrics(match.syncedLyrics);
+    const lines = parseLrc(match.syncedLyrics);
     if (lines.length === 0) return null;
 
     logInternalInfo("YouTubeMusicDataSource.getLyrics LRCLIB success", {
@@ -5247,96 +5233,6 @@ export class YouTubeMusicDataSource extends DataSource {
       .replace(/\s+-\s+(?:official\s*)?(?:music\s*)?(?:video|visualizer|audio|lyrics?|lyric\s*video).*$/i, "")
       .replace(/\s{2,}/g, " ")
       .trim();
-  }
-
-  private parseSyncedLyrics(lrc: string): Lyrics["lines"] {
-    const lines: Lyrics["lines"] = [];
-    const timestampPattern = /\[(\d{1,3}):(\d{2})(?:[.:](\d{1,3}))?\]/g;
-
-    for (const rawLine of lrc.split(/\r?\n/)) {
-      const text = rawLine.replace(timestampPattern, "").trim();
-      if (!text) continue;
-
-      const timestamps = [...rawLine.matchAll(timestampPattern)];
-      for (const timestamp of timestamps) {
-        const minutes = Number(timestamp[1]);
-        const seconds = Number(timestamp[2]);
-        const fraction = timestamp[3] ?? "0";
-        const fractionSec = Number(fraction.padEnd(3, "0").slice(0, 3)) / 1000;
-        lines.push({
-          text,
-          startTimeSec: minutes * 60 + seconds + fractionSec,
-        });
-      }
-    }
-
-    lines.sort((left, right) => (left.startTimeSec ?? 0) - (right.startTimeSec ?? 0));
-    return lines.map((line, index) => ({
-      ...line,
-      endTimeSec: lines[index + 1]?.startTimeSec,
-    }));
-  }
-
-  private parseTtmlLyrics(ttml: string): Lyrics["lines"] {
-    const parser = new DOMParser();
-    const document = parser.parseFromString(ttml, "application/xml");
-    if (document.querySelector("parsererror")) return [];
-
-    const lines = [...document.getElementsByTagName("p")].flatMap((node) => {
-      const startTimeSec = this.parseTtmlTime(node.getAttribute("begin") ?? node.getAttribute("start"));
-      if (startTimeSec === undefined) return [];
-
-      const endTimeSec = this.parseTtmlTime(node.getAttribute("end"));
-      const text = (node.textContent ?? "")
-        .replace(/\s+/g, " ")
-        .trim();
-      if (!text) return [];
-
-      return [{
-        text,
-        startTimeSec,
-        endTimeSec,
-      }];
-    });
-
-    lines.sort((left, right) => (left.startTimeSec ?? 0) - (right.startTimeSec ?? 0));
-    return lines.map((line, index) => ({
-      ...line,
-      endTimeSec: line.endTimeSec ?? lines[index + 1]?.startTimeSec,
-    }));
-  }
-
-  private parseTtmlTime(value: string | null): number | undefined {
-    if (!value) return undefined;
-
-    const clockTime = value.match(/^(\d+):(\d{2}):(\d{2})(?:[.:](\d{1,3}))?$/);
-    if (clockTime) {
-      const hours = Number(clockTime[1]);
-      const minutes = Number(clockTime[2]);
-      const seconds = Number(clockTime[3]);
-      const fraction = clockTime[4] ?? "0";
-      return hours * 3600 + minutes * 60 + seconds + Number(fraction.padEnd(3, "0").slice(0, 3)) / 1000;
-    }
-
-    const minuteTime = value.match(/^(\d+):(\d{2})(?:[.:](\d{1,3}))?$/);
-    if (minuteTime) {
-      const minutes = Number(minuteTime[1]);
-      const seconds = Number(minuteTime[2]);
-      const fraction = minuteTime[3] ?? "0";
-      return minutes * 60 + seconds + Number(fraction.padEnd(3, "0").slice(0, 3)) / 1000;
-    }
-
-    const offsetTime = value.match(/^([\d.]+)(h|m|s|ms)$/);
-    if (offsetTime) {
-      const amount = Number(offsetTime[1]);
-      if (!Number.isFinite(amount)) return undefined;
-      if (offsetTime[2] === "h") return amount * 3600;
-      if (offsetTime[2] === "m") return amount * 60;
-      if (offsetTime[2] === "s") return amount;
-      return amount / 1000;
-    }
-
-    return undefined;
   }
 
   private async refreshTrack(trackId: string, cacheKey: string): Promise<Track> {

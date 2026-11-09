@@ -60,3 +60,46 @@ export function findActiveLineIndex(lines: LyricLine[], timeSec: number): number
   }
   return active;
 }
+
+/** One rendered piece of a line: a timed word (or syllable), or the whitespace between. */
+export interface LineToken {
+  text: string;
+  /** Index into the line's word timings; -1 for whitespace, which is never lit on its own. */
+  wordIndex: number;
+  /** Part of a backing vocal, rendered beneath the lead line. */
+  background: boolean;
+}
+
+/**
+ * The line as tokens to render, aligned one-to-one with its word timings.
+ *
+ * With real word timing the tokens come straight from `line.words`, so the n-th lit span is
+ * always the n-th timed word. This used to re-split `line.text` on whitespace and pair the
+ * pieces with the timings by position, which put every word after the first mismatch (a
+ * syllable split, a hyphen, a word Musixmatch tokenised differently) on someone else's
+ * timestamp. Without word timing the text is split on whitespace, as before.
+ */
+export function lineTokens(line: Pick<LyricLine, "text" | "words">): LineToken[] {
+  const words = line.words;
+  if (!words || words.length === 0) {
+    let counter = -1;
+    return line.text
+      .split(/(\s+)/)
+      .filter((token) => token.length > 0)
+      .map((token) => ({
+        text: token,
+        wordIndex: token.trim() ? (counter += 1) : -1,
+        background: false,
+      }));
+  }
+
+  const tokens: LineToken[] = [];
+  words.forEach((word, index) => {
+    const background = Boolean(word.background);
+    const [, leading = "", core = "", trailing = ""] = word.text.match(/^(\s*)([\s\S]*?)(\s*)$/) ?? [];
+    if (leading) tokens.push({ text: leading, wordIndex: -1, background });
+    tokens.push({ text: core, wordIndex: index, background });
+    if (trailing) tokens.push({ text: trailing, wordIndex: -1, background });
+  });
+  return tokens;
+}
