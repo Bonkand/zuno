@@ -157,7 +157,10 @@ export class Queue {
       this.manualQueueLength = Math.max(0, this.manualQueueLength - 1);
     }
 
-    if (index <= this.index) {
+    if (this.items.length === 0) {
+      this.index = -1;
+      this.manualQueueLength = 0;
+    } else if (index <= this.index) {
       this.index = Math.max(0, this.index - 1);
     }
   }
@@ -279,18 +282,70 @@ export class Queue {
     this.manualQueueLength = 0;
   }
 
+  /**
+   * Undoes a shuffle around what is playing *now*, not around where the shuffle started.
+   *
+   * The snapshot is taken when shuffle turns on, but by the time it turns off the listener may
+   * have moved several tracks along, queued or removed songs. Rebuilding from the snapshot's
+   * cursor used to jump back to the old start track (so the next skip replayed songs) and
+   * dropped anything queued since. Instead, the source order is kept for tracks that still
+   * exist, the cursor follows the current track, and hand-queued entries stay right after it.
+   */
   restoreOriginalOrder(manualCount: number): void {
-    if (this.fullOriginalOrder) {
-      this.items = [...this.fullOriginalOrder.items];
-      this.index = this.fullOriginalOrder.index;
-      this.manualQueueLength = this.fullOriginalOrder.manualQueueLength;
-      this.originalUpcoming = null;
-      this.fullOriginalOrder = null;
+    const snapshot = this.fullOriginalOrder;
+    const upcomingSnapshot = this.originalUpcoming;
+    this.fullOriginalOrder = null;
+    this.originalUpcoming = null;
+
+    if (snapshot) {
+      const current = this.current;
+      if (!current) return;
+      const manualEnd = this.index + 1 + manualCount;
+      const manual = this.items.slice(this.index + 1, manualEnd);
+      // Everything still in the queue apart from the current track and the manual run.
+      const remaining = takeCounts([
+        ...this.items.slice(0, this.index),
+        ...this.items.slice(manualEnd),
+      ]);
+      let currentPos = snapshot.items.indexOf(current);
+      if (currentPos < 0) currentPos = snapshot.items.findIndex((t) => t.id === current.id);
+      if (currentPos < 0) return;
+
+      const before = takeFrom(snapshot.items.slice(0, currentPos), remaining);
+      const after = takeFrom(snapshot.items.slice(currentPos + 1), remaining);
+      // Tracks added after the shuffle that the snapshot never saw keep their place at the end.
+      const extra = this.items.slice(manualEnd).filter((t) => takeOne(remaining, t));
+      this.items = [...before, current, ...manual, ...after, ...extra];
+      this.index = before.length;
+      this.manualQueueLength = manual.length;
       return;
     }
-    if (!this.originalUpcoming) return;
+
+    if (!upcomingSnapshot) return;
     const manualQueueEnd = this.index + 1 + manualCount;
-    this.items = [...this.items.slice(0, manualQueueEnd), ...this.originalUpcoming];
-    this.originalUpcoming = null;
+    // Only what is still upcoming comes back: tracks already played from the shuffled tail
+    // must not be put back in front of the listener.
+    const liveTail = this.items.slice(manualQueueEnd);
+    const remaining = takeCounts(liveTail);
+    const restored = takeFrom(upcomingSnapshot, remaining);
+    const extra = liveTail.filter((t) => takeOne(remaining, t));
+    this.items = [...this.items.slice(0, manualQueueEnd), ...restored, ...extra];
   }
+}
+
+function takeCounts(tracks: readonly Track[]): Map<Track, number> {
+  const counts = new Map<Track, number>();
+  for (const track of tracks) counts.set(track, (counts.get(track) ?? 0) + 1);
+  return counts;
+}
+
+function takeOne(counts: Map<Track, number>, track: Track): boolean {
+  const count = counts.get(track) ?? 0;
+  if (count <= 0) return false;
+  counts.set(track, count - 1);
+  return true;
+}
+
+function takeFrom(tracks: readonly Track[], counts: Map<Track, number>): Track[] {
+  return tracks.filter((track) => takeOne(counts, track));
 }

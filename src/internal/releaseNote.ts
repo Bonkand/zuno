@@ -135,6 +135,16 @@ export function hasPriorUse(): boolean {
   }
 }
 
+/*
+ * Sampled once, when this module is first evaluated — before React mounts.
+ *
+ * resolveReleaseNoteVersion awaits two IPC round trips before it gets to ask, and by then the
+ * running app has usually already written the session snapshot that is one of the keys above.
+ * Asking at that point made every fresh install look like an update, so a brand-new user got
+ * an "Updated" dialog stacked on top of the onboarding tour.
+ */
+const PRIOR_USE_AT_BOOT = hasPriorUse();
+
 function readSeenVersion(): string | null {
   try {
     return localStorage.getItem(SEEN_VERSION_KEY);
@@ -172,7 +182,7 @@ export async function resolveReleaseNoteVersion(): Promise<string | null> {
   const durable = await getAppSetting<string>(SEEN_VERSION_KEY).catch(() => null);
   const lastSeenVersion = typeof durable === "string" ? durable : readSeenVersion();
 
-  if (shouldShowReleaseNote(installedVersion, lastSeenVersion, hasPriorUse())) {
+  if (shouldShowReleaseNote(installedVersion, lastSeenVersion, PRIOR_USE_AT_BOOT)) {
     return installedVersion;
   }
 

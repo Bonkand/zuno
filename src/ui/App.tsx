@@ -1829,7 +1829,9 @@ useEffect(() => {
       },
     );
 
-    void recoverMissedBackgroundEvent();
+    void recoverMissedBackgroundEvent().catch((error) => {
+      logInternalWarn("miniPlayer.recoverMissedBackgroundEvent failed", { error: String(error) });
+    });
 
     return () => {
       window.removeEventListener("main-window-drag-started", handleMainWindowDragStarted);
@@ -2270,7 +2272,8 @@ useEffect(() => {
       )}
 
       <ReleaseNoteDialog
-        version={releaseNoteVersion}
+        // Never on top of the first-run tour: two modals at once is one too many.
+        version={onboardingComplete === false ? null : releaseNoteVersion}
         onDismiss={() => {
           if (releaseNoteVersion) markReleaseNoteSeen(releaseNoteVersion);
           setReleaseNoteVersion(null);

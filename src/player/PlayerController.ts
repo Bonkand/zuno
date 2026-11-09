@@ -837,13 +837,28 @@ export class PlayerController {
     });
   }
 
+  /**
+   * Moves the queue cursor forward and returns the entry to play, or null at the end.
+   *
+   * A next entry with the same id as what is playing is only skipped when the queue and the
+   * player disagree about what is current (a track started from outside the queue). When they
+   * agree, it is a genuine second entry — "Play next" on the current song, or a playlist that
+   * lists a song twice in a row — and treating it as the end of the queue used to throw the
+   * whole queue away for recommendations.
+   */
+  private advanceQueue(): Track | null {
+    const playingId = this.state.currentTrack?.id;
+    const queueInSync = this.queue.current?.id === playingId;
+    const nextTrack = this.queue.next(false);
+    if (!nextTrack) return null;
+    if (!queueInSync && nextTrack.id === playingId) return null;
+    return nextTrack;
+  }
+
   private async skipToNextNow(): Promise<void> {
     const shouldResume = this.shouldResumeAfterNavigation();
-    const nextTrack = this.queue.next(false);
-    if (
-      (!nextTrack || nextTrack.id === this.state.currentTrack?.id)
-      && this.state.currentTrack
-    ) {
+    const nextTrack = this.advanceQueue();
+    if (!nextTrack && this.state.currentTrack) {
       const queueEndTrack = await this.loadQueueEndRecommendations(this.state.currentTrack);
       if (queueEndTrack) {
         if (shouldResume) {
@@ -854,11 +869,7 @@ export class PlayerController {
       }
       if (queueEndTrack || !this.autoplayEnabled) return;
     }
-    if (
-      (!nextTrack || nextTrack.id === this.state.currentTrack?.id)
-      && this.autoplayEnabled
-      && this.state.currentTrack
-    ) {
+    if (!nextTrack && this.autoplayEnabled && this.state.currentTrack) {
       const radioTrack = await this.loadRadioQueue(this.state.currentTrack);
       if (radioTrack) {
         if (shouldResume) {
@@ -873,7 +884,7 @@ export class PlayerController {
       currentTrackId: this.state.currentTrack?.id ?? null,
       nextTrackId: nextTrack?.id ?? null,
     });
-    if (!nextTrack || nextTrack.id === this.state.currentTrack?.id) return;
+    if (!nextTrack) return;
     this.refillAutomaticQueue();
     if (shouldResume) {
       await this.playTrackById(nextTrack.id);
@@ -985,8 +996,8 @@ export class PlayerController {
         logInternalInfo("PlayerController.sleepTimerMode reached", { mode: "track" });
         this.sleepTimerMode = null;
 
-        const nextTrack = this.queue.next(false);
-        if (nextTrack && nextTrack.id !== this.state.currentTrack?.id) {
+        const nextTrack = this.advanceQueue();
+        if (nextTrack) {
           this.refillAutomaticQueue();
           await this.playTrackById(nextTrack.id);
           // the track started loading/playing, wait a tiny bit then pause at 0
@@ -1017,9 +1028,9 @@ export class PlayerController {
         return;
       }
 
-      const nextTrack = this.queue.next(false);
+      const nextTrack = this.advanceQueue();
 
-      if (nextTrack && nextTrack.id !== this.state.currentTrack?.id) {
+      if (nextTrack) {
         this.refillAutomaticQueue();
         await this.playTrackById(nextTrack.id);
         return;
