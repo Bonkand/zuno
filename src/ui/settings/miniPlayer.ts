@@ -189,6 +189,24 @@ function queueMiniPlayerOp<T>(op: () => Promise<T>): Promise<T> {
   return next;
 }
 
+/**
+ * Must match `additionalBrowserArgs` on the main window in `tauri.conf.json`.
+ *
+ * WebView2 refuses to start a second webview on the same data directory with different browser
+ * arguments, so the mini player has to carry exactly the main window's. The JS window API does
+ * not type the field, but the options are deserialized straight into Tauri's `WindowConfig`,
+ * which has it. Ignored outside Windows.
+ *
+ * `HardwareMediaKeyHandling` is what is being turned off: it makes WebView2 publish its own
+ * media session for any `<video>` in the page — the hidden YouTube IFrame deck — next to the
+ * native one `windows_media.rs` publishes. With the window hidden, a play pressed in the
+ * Windows media flyout or a taskbar media widget could land on that session and start the
+ * IFrame's cued video directly, behind the player's back, so the app came back showing a
+ * track and a state that were no longer what was playing.
+ */
+const WINDOWS_BROWSER_ARGS =
+  "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,HardwareMediaKeyHandling";
+
 async function createMiniPlayerWindow(): Promise<WebviewWindow | null> {
   const existing = await WebviewWindow.getByLabel(MINI_PLAYER_LABEL);
   if (existing) return existing;
@@ -205,6 +223,7 @@ async function createMiniPlayerWindow(): Promise<WebviewWindow | null> {
       visible: false,
       shadow: false,
       skipTaskbar: true,
+      ...({ additionalBrowserArgs: WINDOWS_BROWSER_ARGS } as object),
     });
     // Resolved on the window's own events: the constructor returns before the webview exists,
     // and showing it too early races the process that has to back it.
