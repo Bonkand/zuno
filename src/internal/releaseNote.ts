@@ -23,11 +23,10 @@ import { getAppSetting, setAppSetting } from "./appSettings";
  */
 const SEEN_VERSION_KEY = "release-note-seen-version";
 
-export const RELEASE_NOTE_BODY = `**Accounts** — switch between multiple YouTube Music accounts instantly, no signing out required.
-**Sound** — pick your exact output device (real speaker/headphone names on Linux too), plus a bypass toggle and mini EQ right in the player bar.
-**Playlists** — shuffle now truly shuffles the whole playlist from wherever you are in it, loop cycles properly instead of getting stuck, and any playlist can be hidden from your library.
-**Discovery** — start a radio station from any track, and pages load in with proper skeletons instead of a blank flash.
-**Fixes** — some tracks auto-skipping a few seconds in, crossfade stalling when minimized, YouTube embed errors now falling back automatically, and a second launch refocusing Zuno instead of opening twice.
+export const RELEASE_NOTE_BODY = `**Media controls** — playing, pausing and skipping from the Windows media flyout or a taskbar widget while Zuno is in the tray now shows up correctly when you reopen it.
+**Lyrics** — fewer wrong words and better timing, and word-by-word synced lyrics are preferred when available.
+**Playback** — "stop after this track" works with crossfade, the sleep timer restores your volume, and the playhead no longer drifts.
+**Queue** — restoring after shuffle keeps the right order, no more duplicate "next" tracks, and Last.fm no longer double-scrobbles repeats.
 
 Report anything broken on GitHub, or come say hello at /r/ZunoMusic.
 
