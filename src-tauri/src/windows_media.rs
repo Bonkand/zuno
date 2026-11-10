@@ -4,7 +4,13 @@ use tauri::{AppHandle, Emitter, Manager};
 use windows::{
     core::HSTRING,
     Foundation::{TypedEventHandler, Uri},
-    Media::Playback::{MediaPlaybackCommandManager, MediaPlayer},
+    Media::Playback::{
+        MediaCommandEnablingRule, MediaPlaybackCommandManager,
+        MediaPlaybackCommandManagerNextReceivedEventArgs,
+        MediaPlaybackCommandManagerPauseReceivedEventArgs,
+        MediaPlaybackCommandManagerPlayReceivedEventArgs,
+        MediaPlaybackCommandManagerPreviousReceivedEventArgs, MediaPlayer,
+    },
     Media::{
         MediaPlaybackStatus, MediaPlaybackType, SystemMediaTransportControls,
         SystemMediaTransportControlsButton, SystemMediaTransportControlsButtonPressedEventArgs,
@@ -61,6 +67,10 @@ struct NativeMediaSession {
     controls: SystemMediaTransportControls,
     metadata: Mutex<Option<MediaMetadata>>,
     taskbar_toolbar: Mutex<Option<ThumbnailToolbar>>,
+    _play_token: i64,
+    _pause_token: i64,
+    _next_token: i64,
+    _previous_token: i64,
     _button_pressed_token: i64,
 }
 
@@ -97,18 +107,85 @@ impl NativeMediaSession {
             .and_then(|_| controls.SetIsPreviousEnabled(true))
             .map_err(|error| error.to_string())?;
 
-        /*
-         * The command manager stays off. With it on, Windows treats this source-less player as
-         * a real playback session and its playback policy pauses it on its own (window
-         * minimised or backgrounded, another app taking over media playback) — and the command
-         * manager forwarded each of those to the frontend as a user pause, so the music stopped
-         * a few seconds after a minimise. With it off those policy commands land on the silent
-         * player, where they do nothing, and real presses on the media keys, the flyout and the
-         * taskbar widget arrive through `ButtonPressed` below.
-         */
         let command_manager = player.CommandManager().map_err(|error| error.to_string())?;
         command_manager
-            .SetIsEnabled(false)
+            .SetIsEnabled(true)
+            .and_then(|_| {
+                command_manager
+                    .PlayBehavior()?
+                    .SetEnablingRule(MediaCommandEnablingRule::Always)
+            })
+            .and_then(|_| {
+                command_manager
+                    .PauseBehavior()?
+                    .SetEnablingRule(MediaCommandEnablingRule::Always)
+            })
+            .and_then(|_| {
+                command_manager
+                    .NextBehavior()?
+                    .SetEnablingRule(MediaCommandEnablingRule::Always)
+            })
+            .and_then(|_| {
+                command_manager
+                    .PreviousBehavior()?
+                    .SetEnablingRule(MediaCommandEnablingRule::Always)
+            })
+            .map_err(|error| error.to_string())?;
+
+        let play_app = app.clone();
+        let play_token = command_manager
+            .PlayReceived(&TypedEventHandler::<
+                MediaPlaybackCommandManager,
+                MediaPlaybackCommandManagerPlayReceivedEventArgs,
+            >::new(move |_sender, args| {
+                if let Some(args) = args.as_ref() {
+                    args.SetHandled(true)?;
+                }
+                let _ = play_app.emit(MEDIA_CONTROL_EVENT, "play");
+                Ok(())
+            }))
+            .map_err(|error| error.to_string())?;
+
+        let pause_app = app.clone();
+        let pause_token = command_manager
+            .PauseReceived(&TypedEventHandler::<
+                MediaPlaybackCommandManager,
+                MediaPlaybackCommandManagerPauseReceivedEventArgs,
+            >::new(move |_sender, args| {
+                if let Some(args) = args.as_ref() {
+                    args.SetHandled(true)?;
+                }
+                let _ = pause_app.emit(MEDIA_CONTROL_EVENT, "pause");
+                Ok(())
+            }))
+            .map_err(|error| error.to_string())?;
+
+        let next_app = app.clone();
+        let next_token = command_manager
+            .NextReceived(&TypedEventHandler::<
+                MediaPlaybackCommandManager,
+                MediaPlaybackCommandManagerNextReceivedEventArgs,
+            >::new(move |_sender, args| {
+                if let Some(args) = args.as_ref() {
+                    args.SetHandled(true)?;
+                }
+                let _ = next_app.emit(MEDIA_CONTROL_EVENT, "next");
+                Ok(())
+            }))
+            .map_err(|error| error.to_string())?;
+
+        let previous_app = app.clone();
+        let previous_token = command_manager
+            .PreviousReceived(&TypedEventHandler::<
+                MediaPlaybackCommandManager,
+                MediaPlaybackCommandManagerPreviousReceivedEventArgs,
+            >::new(move |_sender, args| {
+                if let Some(args) = args.as_ref() {
+                    args.SetHandled(true)?;
+                }
+                let _ = previous_app.emit(MEDIA_CONTROL_EVENT, "previous");
+                Ok(())
+            }))
             .map_err(|error| error.to_string())?;
 
         let button_pressed_app = app.clone();
@@ -121,8 +198,6 @@ impl NativeMediaSession {
                     return Ok(());
                 };
                 let action = match args.Button()? {
-                    SystemMediaTransportControlsButton::Play => Some("play"),
-                    SystemMediaTransportControlsButton::Pause => Some("pause"),
                     SystemMediaTransportControlsButton::Next => Some("next"),
                     SystemMediaTransportControlsButton::Previous => Some("previous"),
                     _ => None,
@@ -142,6 +217,10 @@ impl NativeMediaSession {
             controls,
             metadata: Mutex::new(None),
             taskbar_toolbar: Mutex::new(taskbar_toolbar),
+            _play_token: play_token,
+            _pause_token: pause_token,
+            _next_token: next_token,
+            _previous_token: previous_token,
             _button_pressed_token: button_pressed_token,
         })
     }
