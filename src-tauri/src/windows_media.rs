@@ -2,15 +2,8 @@ use serde::Deserialize;
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager};
 use windows::{
-    core::HSTRING,
+    core::{factory, HSTRING},
     Foundation::{TypedEventHandler, Uri},
-    Media::Playback::{
-        MediaCommandEnablingRule, MediaPlaybackCommandManager,
-        MediaPlaybackCommandManagerNextReceivedEventArgs,
-        MediaPlaybackCommandManagerPauseReceivedEventArgs,
-        MediaPlaybackCommandManagerPlayReceivedEventArgs,
-        MediaPlaybackCommandManagerPreviousReceivedEventArgs, MediaPlayer,
-    },
     Media::{
         MediaPlaybackStatus, MediaPlaybackType, SystemMediaTransportControls,
         SystemMediaTransportControlsButton, SystemMediaTransportControlsButtonPressedEventArgs,
@@ -22,6 +15,7 @@ use windows::{
         System::Com::{
             CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
         },
+        System::WinRT::ISystemMediaTransportControlsInterop,
         UI::{
             Shell::{
                 DefSubclassProc, ITaskbarList3, RemoveWindowSubclass, SetWindowSubclass,
@@ -62,16 +56,16 @@ struct MediaMetadata {
 pub struct WindowsMediaSession(Mutex<Option<NativeMediaSession>>);
 
 struct NativeMediaSession {
-    _player: MediaPlayer,
-    _command_manager: MediaPlaybackCommandManager,
     controls: SystemMediaTransportControls,
     metadata: Mutex<Option<MediaMetadata>>,
     taskbar_toolbar: Mutex<Option<ThumbnailToolbar>>,
-    _play_token: i64,
-    _pause_token: i64,
-    _next_token: i64,
-    _previous_token: i64,
-    _button_pressed_token: i64,
+    button_pressed_token: i64,
+}
+
+impl Drop for NativeMediaSession {
+    fn drop(&mut self) {
+        let _ = self.controls.RemoveButtonPressed(self.button_pressed_token);
+    }
 }
 
 impl WindowsMediaSession {
@@ -93,11 +87,33 @@ impl WindowsMediaSession {
 }
 
 impl NativeMediaSession {
+    /*
+     * The controls are attached straight to the main window through
+     * `ISystemMediaTransportControlsInterop::GetForWindow` — the documented route for a Win32
+     * app — rather than borrowed from a `Windows.Media.Playback.MediaPlayer`.
+     *
+     * A `MediaPlayer` with its `CommandManager` enabled is a real playback session as far as
+     * Windows is concerned, and the system's playback policy drives it like one: it sends that
+     * player `Pause` on its own (backgrounding/minimising the window, another app taking over
+     * media playback), and the command manager forwarded every one of those to the frontend as
+     * if the user had pressed pause. The player never held any audio — Rust does — so the only
+     * effect was the music stopping a few seconds after the window was minimised, after which
+     * Windows promoted whatever other session was around. Window-bound controls only ever
+     * report real button presses.
+     *
+     * Runs on the main thread: `update_windows_media_session` is a synchronous command, and
+     * both `GetForWindow` and the taskbar subclass below need the window's own thread.
+     */
     fn new(app: AppHandle) -> Result<Self, String> {
-        let player = MediaPlayer::new().map_err(|error| error.to_string())?;
-        let controls = player
-            .SystemMediaTransportControls()
+        let window = app
+            .get_webview_window("main")
+            .ok_or_else(|| "main window unavailable".to_string())?;
+        let hwnd = window.hwnd().map_err(|error| error.to_string())?;
+
+        let interop = factory::<SystemMediaTransportControls, ISystemMediaTransportControlsInterop>()
             .map_err(|error| error.to_string())?;
+        let controls: SystemMediaTransportControls =
+            unsafe { interop.GetForWindow(hwnd) }.map_err(|error| error.to_string())?;
 
         controls
             .SetIsEnabled(true)
@@ -105,87 +121,6 @@ impl NativeMediaSession {
             .and_then(|_| controls.SetIsPauseEnabled(true))
             .and_then(|_| controls.SetIsNextEnabled(true))
             .and_then(|_| controls.SetIsPreviousEnabled(true))
-            .map_err(|error| error.to_string())?;
-
-        let command_manager = player.CommandManager().map_err(|error| error.to_string())?;
-        command_manager
-            .SetIsEnabled(true)
-            .and_then(|_| {
-                command_manager
-                    .PlayBehavior()?
-                    .SetEnablingRule(MediaCommandEnablingRule::Always)
-            })
-            .and_then(|_| {
-                command_manager
-                    .PauseBehavior()?
-                    .SetEnablingRule(MediaCommandEnablingRule::Always)
-            })
-            .and_then(|_| {
-                command_manager
-                    .NextBehavior()?
-                    .SetEnablingRule(MediaCommandEnablingRule::Always)
-            })
-            .and_then(|_| {
-                command_manager
-                    .PreviousBehavior()?
-                    .SetEnablingRule(MediaCommandEnablingRule::Always)
-            })
-            .map_err(|error| error.to_string())?;
-
-        let play_app = app.clone();
-        let play_token = command_manager
-            .PlayReceived(&TypedEventHandler::<
-                MediaPlaybackCommandManager,
-                MediaPlaybackCommandManagerPlayReceivedEventArgs,
-            >::new(move |_sender, args| {
-                if let Some(args) = args.as_ref() {
-                    args.SetHandled(true)?;
-                }
-                let _ = play_app.emit(MEDIA_CONTROL_EVENT, "play");
-                Ok(())
-            }))
-            .map_err(|error| error.to_string())?;
-
-        let pause_app = app.clone();
-        let pause_token = command_manager
-            .PauseReceived(&TypedEventHandler::<
-                MediaPlaybackCommandManager,
-                MediaPlaybackCommandManagerPauseReceivedEventArgs,
-            >::new(move |_sender, args| {
-                if let Some(args) = args.as_ref() {
-                    args.SetHandled(true)?;
-                }
-                let _ = pause_app.emit(MEDIA_CONTROL_EVENT, "pause");
-                Ok(())
-            }))
-            .map_err(|error| error.to_string())?;
-
-        let next_app = app.clone();
-        let next_token = command_manager
-            .NextReceived(&TypedEventHandler::<
-                MediaPlaybackCommandManager,
-                MediaPlaybackCommandManagerNextReceivedEventArgs,
-            >::new(move |_sender, args| {
-                if let Some(args) = args.as_ref() {
-                    args.SetHandled(true)?;
-                }
-                let _ = next_app.emit(MEDIA_CONTROL_EVENT, "next");
-                Ok(())
-            }))
-            .map_err(|error| error.to_string())?;
-
-        let previous_app = app.clone();
-        let previous_token = command_manager
-            .PreviousReceived(&TypedEventHandler::<
-                MediaPlaybackCommandManager,
-                MediaPlaybackCommandManagerPreviousReceivedEventArgs,
-            >::new(move |_sender, args| {
-                if let Some(args) = args.as_ref() {
-                    args.SetHandled(true)?;
-                }
-                let _ = previous_app.emit(MEDIA_CONTROL_EVENT, "previous");
-                Ok(())
-            }))
             .map_err(|error| error.to_string())?;
 
         let button_pressed_app = app.clone();
@@ -198,6 +133,8 @@ impl NativeMediaSession {
                     return Ok(());
                 };
                 let action = match args.Button()? {
+                    SystemMediaTransportControlsButton::Play => Some("play"),
+                    SystemMediaTransportControlsButton::Pause => Some("pause"),
                     SystemMediaTransportControlsButton::Next => Some("next"),
                     SystemMediaTransportControlsButton::Previous => Some("previous"),
                     _ => None,
@@ -212,16 +149,10 @@ impl NativeMediaSession {
         let taskbar_toolbar = ThumbnailToolbar::new(&app).ok();
 
         Ok(Self {
-            _player: player,
-            _command_manager: command_manager,
             controls,
             metadata: Mutex::new(None),
             taskbar_toolbar: Mutex::new(taskbar_toolbar),
-            _play_token: play_token,
-            _pause_token: pause_token,
-            _next_token: next_token,
-            _previous_token: previous_token,
-            _button_pressed_token: button_pressed_token,
+            button_pressed_token,
         })
     }
 
