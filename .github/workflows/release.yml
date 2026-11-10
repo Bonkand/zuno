@@ -217,7 +217,10 @@ jobs:
         with:
           tagName: ${{ env.RELEASE_TAG }}
           releaseDraft: false
-          uploadUpdaterJson: ${{ steps.release_metadata.outputs.publish_update }}
+          # Off while `createUpdaterArtifacts` is off in tauri.conf.json: there are no signatures
+          # to build a latest.json from. The app's updater endpoints point at noFAYZ/zuno, whose
+          # key signs its updates, so nothing reads updater metadata from this repo's releases.
+          uploadUpdaterJson: false
           uploadUpdaterSignatures: false
           updaterJsonPreferNsis: true
           args: ${{ matrix.platform.build_args }}
@@ -268,6 +271,8 @@ jobs:
   publish-updater-channel:
     name: Publish gated updater metadata
     needs: [prepare, release]
+    # Disabled with `uploadUpdaterJson` above: there is no latest.json to publish.
+    if: false
     runs-on: ubuntu-latest
     env:
       RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
